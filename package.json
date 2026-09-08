@@ -1,0 +1,18 @@
+{
+  "name": "simbashop-discord-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SIMBA SHOP Discord bot + Shoppex webhook receiver",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0"
+  }
+}
