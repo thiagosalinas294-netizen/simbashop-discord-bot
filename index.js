@@ -246,7 +246,7 @@ app.post(
   }
 );
 
-app.get("/", (_req, res) => {
+app.get("/testventa", (_req, res) => {
   res.json({
     ok: true,
     service: "SIMBA SHOP Discord bot",
