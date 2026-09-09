@@ -234,8 +234,9 @@ app.post(
         if (process.env.RESTOCK_CHANNEL_ID) {
           const channel = await client.channels.fetch(process.env.RESTOCK_CHANNEL_ID);
           if (channel?.isTextBased()) {
-            await channel.send({
+   await channel.send({
   content: "@everyone",
+  allowedMentions: { parse: ["everyone"] },
   embeds: [buildRestockEmbed(payload)]
 });
           }
