@@ -346,6 +346,58 @@ app.get("/teststock", async (_req, res) => {
     });
   }
 });
+app.get("/testshoppex", async (_req, res) => {
+  try {
+    if (!process.env.SHOPPEX_API_KEY) {
+      return res.status(500).json({
+        ok: false,
+        error: "SHOPPEX_API_KEY no está configurada",
+      });
+    }
+
+    const response = await fetch(
+      "https://api.shoppex.io/dev/v1/products",
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Shoppex API error:", data);
+
+      return res.status(response.status).json({
+        ok: false,
+        error: data,
+      });
+    }
+
+    const products = (data.data || []).map((product) => ({
+      id: product.id,
+      title: product.title,
+      stock: product.stock,
+      available_stock: product.available_stock,
+      variants: product.variants || [],
+    }));
+
+    console.log("Shoppex products:", products);
+
+    return res.json({
+      ok: true,
+      products,
+    });
+  } catch (error) {
+    console.error("Shoppex API test error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
 app.listen(PORT, () => {
   console.log(`HTTP server listening on port ${PORT}`);
 });
