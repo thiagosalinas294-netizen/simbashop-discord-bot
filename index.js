@@ -506,8 +506,10 @@ async function checkShoppexStock() {
         });
 
         await channel.send({
-          embeds: [embed],
-        });
+  content: "@everyone",
+  allowedMentions: { parse: ["everyone"] },
+  embeds: [embed],
+});
 
         console.log(
           `📦 Restock detectado: ${product.title} (+${addedStock})`
