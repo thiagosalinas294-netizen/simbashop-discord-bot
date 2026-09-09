@@ -246,12 +246,59 @@ app.post(
   }
 );
 
-app.get("/testventa", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "SIMBA SHOP Discord bot",
-    webhook: "/webhooks/shoppex",
-  });
+app.get("/testventa", async (_req, res) => {
+  try {
+    if (!process.env.SALES_CHANNEL_ID) {
+      return res.status(500).json({
+        ok: false,
+        error: "SALES_CHANNEL_ID no está configurado",
+      });
+    }
+
+    const channel = await client.channels.fetch(
+      process.env.SALES_CHANNEL_ID
+    );
+
+    if (!channel?.isTextBased()) {
+      return res.status(500).json({
+        ok: false,
+        error: "El canal de ventas no es válido",
+      });
+    }
+
+    const fakeSale = {
+      order: {
+        id: "TEST-001",
+        total: "5.00",
+        currency: "USD",
+        payment_method: "Test",
+        customer_email: "cliente-prueba@simbashop.com",
+        items: [
+          {
+            product_title: "Producto de prueba",
+            variant_title: "Default",
+            unit_price: "5.00",
+          },
+        ],
+      },
+    };
+
+    await channel.send({
+      embeds: [buildSaleEmbed(fakeSale)],
+    });
+
+    return res.json({
+      ok: true,
+      message: "Venta de prueba enviada a Discord",
+    });
+  } catch (error) {
+    console.error("Test venta error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
 });
 
 app.listen(PORT, () => {
