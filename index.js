@@ -155,6 +155,7 @@ function buildRestockEmbed(payload) {
   );
 
   const embed = new EmbedBuilder()
+    .setColor("#D4AF37")
     .setTitle("📦 Restock!")
     .setDescription(`🛍️ **${productTitle}**${variantTitle ? ` — ${variantTitle}` : ""}`)
     .addFields(
@@ -233,7 +234,10 @@ app.post(
         if (process.env.RESTOCK_CHANNEL_ID) {
           const channel = await client.channels.fetch(process.env.RESTOCK_CHANNEL_ID);
           if (channel?.isTextBased()) {
-            await channel.send({ embeds: [buildRestockEmbed(payload)] });
+            await channel.send({
+  content: "@everyone",
+  embeds: [buildRestockEmbed(payload)]
+});
           }
         }
       }
@@ -483,7 +487,11 @@ async function checkShoppexStock() {
             variant_title: "Default",
             stock: currentStock,
             price: `${product.price ?? "—"} ${product.currency ?? ""}`.trim(),
-            product_url: product.url || product.product_url || "",
+            product_url: `https://simbashop.myshoppex.io/product/${product.title
+  .toLowerCase()
+  .trim()
+  .replace(/\s+/g, "-")
+  .replace(/[^a-z0-9-]/g, "")}`,
             image_url: product.image_url || "",
           },
         };
