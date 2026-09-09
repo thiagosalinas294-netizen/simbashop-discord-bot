@@ -300,7 +300,52 @@ app.get("/testventa", async (_req, res) => {
     });
   }
 });
+app.get("/teststock", async (_req, res) => {
+  try {
+    if (!process.env.RESTOCK_CHANNEL_ID) {
+      return res.status(500).json({
+        ok: false,
+        error: "RESTOCK_CHANNEL_ID no está configurado",
+      });
+    }
 
+    const channel = await client.channels.fetch(
+      process.env.RESTOCK_CHANNEL_ID
+    );
+
+    if (!channel?.isTextBased()) {
+      return res.status(500).json({
+        ok: false,
+        error: "El canal de stock no es válido",
+      });
+    }
+
+    const fakeRestock = {
+      product: {
+        title: "Producto de prueba",
+        variant_title: "Default",
+        stock: 10,
+        price: "5.00 USD",
+      },
+    };
+
+    await channel.send({
+      embeds: [buildRestockEmbed(fakeRestock)],
+    });
+
+    return res.json({
+      ok: true,
+      message: "Aviso de stock enviado a Discord",
+    });
+  } catch (error) {
+    console.error("Test stock error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
 app.listen(PORT, () => {
   console.log(`HTTP server listening on port ${PORT}`);
 });
