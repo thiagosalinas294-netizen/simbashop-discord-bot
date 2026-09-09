@@ -398,6 +398,126 @@ app.get("/testshoppex", async (_req, res) => {
     });
   }
 });
+// ===============================
+// SHOPPEX STOCK MONITOR
+// ===============================
+
+const previousStock = new Map();
+let stockMonitorInitialized = false;
+
+async function checkShoppexStock() {
+  try {
+    if (!process.env.SHOPPEX_API_KEY) {
+      console.log("Stock monitor: SHOPPEX_API_KEY no está configurada.");
+      return;
+    }
+
+    if (!client.isReady()) {
+      return;
+    }
+
+    const response = await fetch(
+      "https://api.shoppex.io/dev/v1/products",
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Stock monitor Shoppex error:", data);
+      return;
+    }
+
+    const products = data.data || [];
+
+    // Primera revisión: solamente guardamos el stock actual.
+    if (!stockMonitorInitialized) {
+      for (const product of products) {
+        previousStock.set(product.id, Number(product.stock || 0));
+      }
+
+      stockMonitorInitialized = true;
+
+      console.log(
+        `Stock monitor iniciado. ${products.length} productos registrados.`
+      );
+
+      return;
+    }
+
+    if (!process.env.RESTOCK_CHANNEL_ID) {
+      console.log("Stock monitor: RESTOCK_CHANNEL_ID no está configurado.");
+      return;
+    }
+
+    const channel = await client.channels.fetch(
+      process.env.RESTOCK_CHANNEL_ID
+    );
+
+    if (!channel?.isTextBased()) {
+      console.error("Stock monitor: canal de stock inválido.");
+      return;
+    }
+
+    for (const product of products) {
+      const currentStock = Number(product.stock || 0);
+      const oldStock = previousStock.get(product.id);
+
+      // Producto nuevo que apareció después de iniciar el monitor.
+      if (oldStock === undefined) {
+        previousStock.set(product.id, currentStock);
+        continue;
+      }
+
+      // Detectamos aumento de stock.
+      if (currentStock > oldStock) {
+        const addedStock = currentStock - oldStock;
+
+        const restockPayload = {
+          product: {
+            title: product.title,
+            variant_title: "Default",
+            stock: currentStock,
+            price: `${product.price ?? "—"} ${product.currency ?? ""}`.trim(),
+            product_url: product.url || product.product_url || "",
+            image_url: product.image_url || "",
+          },
+        };
+
+        const embed = buildRestockEmbed(restockPayload);
+
+        embed.addFields({
+          name: "➕ Added",
+          value: `+${addedStock}`,
+          inline: true,
+        });
+
+        await channel.send({
+          embeds: [embed],
+        });
+
+        console.log(
+          `📦 Restock detectado: ${product.title} (+${addedStock})`
+        );
+      }
+
+      // Actualizamos el stock guardado.
+      previousStock.set(product.id, currentStock);
+    }
+  } catch (error) {
+    console.error("Stock monitor error:", error.message);
+  }
+}
+
+// Revisar cada 30 segundos.
+setInterval(checkShoppexStock, 30000);
+
+// Primera revisión después de arrancar.
+setTimeout(checkShoppexStock, 5000);
 app.listen(PORT, () => {
   console.log(`HTTP server listening on port ${PORT}`);
 });
