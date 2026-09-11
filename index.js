@@ -469,7 +469,7 @@ async function checkShoppexStock() {
     }
 
     for (const product of products) {
-      const currentStock = Number(product.stock || 0);
+      const currentStock = Number(product.available_stock ?? product.stock ?? 0);
       const oldStock = previousStock.get(product.id);
 
       // Producto nuevo que apareció después de iniciar el monitor.
