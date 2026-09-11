@@ -313,74 +313,118 @@ app.get("/teststock", async (_req, res) => {
         error: "RESTOCK_CHANNEL_ID no está configurado",
       });
     }
+function buildSaleEmbed(payload) {
+  const order = getOrder(payload);
+  const item = getFirstItem(order);
 
-    const channel = await client.channels.fetch(
-      process.env.RESTOCK_CHANNEL_ID
-    );
+  const productTitle = firstDefined(
+    item.product_title,
+    item.title,
+    order.product_title,
+    "Product"
+  );
 
-    if (!channel?.isTextBased()) {
-      return res.status(500).json({
-        ok: false,
-        error: "El canal de stock no es válido",
-      });
-    }
+  const quantity = firstDefined(
+    item.quantity,
+    item.qty,
+    order.quantity,
+    1
+  );
 
-    const fakeRestock = {
-      product: {
-        title: "Producto de prueba",
-        variant_title: "Default",
-        stock: 10,
-        price: "5.00 USD",
-      },
-    };
+  const total = firstDefined(
+    order.total,
+    item.total,
+    item.unit_price,
+    "—"
+  );
 
-    await channel.send({
-      embeds: [buildRestockEmbed(fakeRestock)],
-    });
+  const currency = firstDefined(order.currency, "");
 
-    return res.json({
-      ok: true,
-      message: "Aviso de stock enviado a Discord",
-    });
-  } catch (error) {
-    console.error("Test stock error:", error);
+  const payment = firstDefined(
+    order.gateway,
+    order.payment_method,
+    "Unknown"
+  );
 
-    return res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-app.get("/testshoppex", async (_req, res) => {
-  try {
-    if (!process.env.SHOPPEX_API_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "SHOPPEX_API_KEY no está configurada",
-      });
-    }
+  const coupon = firstDefined(
+    order.coupon,
+    order.coupon_code,
+    order.discount_code,
+    "No"
+  );
 
-    const response = await fetch(
-      "https://api.shoppex.io/dev/v1/products",
+  const customer = firstDefined(
+    order.customer_email,
+    order.email,
+    "Unknown"
+  );
+
+  const orderNumber = firstDefined(
+    order.uniqid,
+    order.id,
+    "Unknown"
+  );
+
+  const location = firstDefined(
+    order.location,
+    order.customer_location,
+    order.country,
+    "Unknown"
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor("#D4AF37")
+    .setTitle("🦁 SIMBA SHOP • New Order")
+    .setDescription(`🛒 **New Sale • ${productTitle}**`)
+    .addFields(
       {
-        headers: {
-          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-        },
+        name: "🔐 Product",
+        value: String(productTitle),
+        inline: false,
+      },
+      {
+        name: "📦 Quantity",
+        value: String(quantity),
+        inline: true,
+      },
+      {
+        name: "💰 Total",
+        value: money(total, currency),
+        inline: true,
+      },
+      {
+        name: "💳 Payment",
+        value: String(payment),
+        inline: true,
+      },
+      {
+        name: "🎟️ Coupon",
+        value: String(coupon),
+        inline: true,
+      },
+      {
+        name: "🆔 Order ID",
+        value: String(orderNumber),
+        inline: true,
+      },
+      {
+        name: "📧 Customer",
+        value: String(customer),
+        inline: false,
+      },
+      {
+        name: "🌎 Location",
+        value: String(location),
+        inline: false,
       }
-    );
+    )
+    .setFooter({
+      text: "🦁 SIMBA SHOP • Shoppex",
+    })
+    .setTimestamp();
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error("Shoppex API error:", data);
-
-      return res.status(response.status).json({
-        ok: false,
-        error: data,
-      });
-    }
-
-    const products = (data.data || []).map((product) => ({
+  return embed;
+}
       id: product.id,
       title: product.title,
       stock: product.stock,
