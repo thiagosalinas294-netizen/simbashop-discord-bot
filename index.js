@@ -442,7 +442,7 @@ async function checkShoppexStock() {
     // Primera revisión: solamente guardamos el stock actual.
     if (!stockMonitorInitialized) {
       for (const product of products) {
-        previousStock.set(product.id, Number(product.stock || 0));
+        previousStock.set(product.id, Number(product.available_stock ?? product.stock ?? 0));
       }
 
       stockMonitorInitialized = true;
