@@ -51,10 +51,10 @@ function getFirstItem(order) {
 
 function getProductUrl(item, order) {
   return firstDefined(
-    item.product_url,
-    item.url,
-    order.product_url,
-    order.checkout_url,
+    item?.product_url,
+    item?.url,
+    order?.product_url,
+    order?.checkout_url,
     ""
   );
 }
@@ -68,64 +68,62 @@ function buildSaleEmbed(payload) {
   const item = getFirstItem(order);
 
   const productTitle = firstDefined(
-    item.product_title,
-    item.title,
-    order.product_title,
+    item?.product_title,
+    item?.title,
+    order?.product_title,
     "Product"
   );
 
   const quantity = firstDefined(
-    item.quantity,
-    item.qty,
-    order.quantity,
+    item?.quantity,
+    item?.qty,
+    order?.quantity,
     1
   );
 
   const total = firstDefined(
-    order.total,
-    item.total,
-    item.unit_price,
+    order?.total,
+    item?.total,
+    item?.unit_price,
     "—"
   );
 
   const currency = firstDefined(
-    order.currency,
+    order?.currency,
     ""
   );
 
   const payment = firstDefined(
-    order.gateway,
-    order.payment_method,
+    order?.gateway,
+    order?.payment_method,
     "Unknown"
   );
 
   const coupon = firstDefined(
-    order.coupon,
-    order.coupon_code,
-    order.discount_code,
+    order?.coupon,
+    order?.coupon_code,
+    order?.discount_code,
     "No"
   );
 
   const customer = firstDefined(
-    order.customer_email,
-    order.email,
+    order?.customer_email,
+    order?.email,
     "Unknown"
   );
 
   const orderNumber = firstDefined(
-    order.uniqid,
-    order.id,
+    order?.uniqid,
+    order?.id,
     "Unknown"
   );
 
   const location = firstDefined(
-    order.location,
-    order.customer_location,
-    order.country,
+    order?.location,
+    order?.customer_location,
+    order?.country,
     "Unknown"
   );
-
-  const productUrl = getProductUrl(item, order);
 
   const embed = new EmbedBuilder()
     .setColor("#D4AF37")
@@ -180,6 +178,8 @@ function buildSaleEmbed(payload) {
     })
     .setTimestamp();
 
+  const productUrl = getProductUrl(item, order);
+
   if (productUrl) {
     embed.setURL(productUrl);
   }
@@ -196,43 +196,45 @@ function buildRestockEmbed(payload) {
   const product = data?.product || data;
 
   const productTitle = firstDefined(
-    product.product_title,
-    product.title,
-    data.product_title,
+    product?.product_title,
+    product?.title,
+    data?.product_title,
     "Product"
   );
 
   const variantTitle = firstDefined(
-    product.variant_title,
-    data.variant_title,
+    product?.variant_title,
+    data?.variant_title,
     "Default"
   );
 
   const stock = firstDefined(
-    product.stock,
-    data.stock,
-    product.quantity,
-    data.quantity,
+    product?.stock,
+    data?.stock,
+    product?.available_stock,
+    data?.available_stock,
+    product?.quantity,
+    data?.quantity,
     "?"
   );
 
   const price = firstDefined(
-    product.price,
-    data.price,
+    product?.price,
+    data?.price,
     "—"
   );
 
   const imageUrl = firstDefined(
-    product.image_url,
-    product.image,
-    data.image_url,
+    product?.image_url,
+    product?.image,
+    data?.image_url,
     ""
   );
 
   const productUrl = firstDefined(
-    product.url,
-    product.product_url,
-    data.product_url,
+    product?.url,
+    product?.product_url,
+    data?.product_url,
     ""
   );
 
@@ -302,6 +304,31 @@ function getEventName(payload, req) {
 }
 
 // ===============================
+// DUPLICATE SALE PROTECTION
+// ===============================
+
+const processedOrders = new Map();
+
+function alreadyProcessed(orderId) {
+  if (!orderId || orderId === "Unknown") {
+    return false;
+  }
+
+  if (processedOrders.has(orderId)) {
+    return true;
+  }
+
+  processedOrders.set(orderId, Date.now());
+
+  // Borra después de 10 minutos
+  setTimeout(() => {
+    processedOrders.delete(orderId);
+  }, 10 * 60 * 1000);
+
+  return false;
+}
+
+// ===============================
 // SHOPPEX WEBHOOK
 // ===============================
 
@@ -312,9 +339,7 @@ app.post(
     try {
       const raw = Buffer.isBuffer(req.body)
         ? req.body
-        : Buffer.from(
-            String(req.body || "")
-          );
+        : Buffer.from(String(req.body || ""));
 
       let payload = {};
 
@@ -336,53 +361,67 @@ app.post(
 
       console.log(
         "Shoppex webhook:",
-        eventName ||
-          "(event header not found)"
+        eventName || "(event header not found)"
       );
 
       const event = String(
         eventName
       ).toLowerCase();
 
-      // ===============================
+      // ===========================
       // SALE
-      // ===============================
+      // ===========================
 
       if (
         event.includes("paid") ||
         event.includes("order.paid") ||
         event.includes("order:paid")
       ) {
-        if (
-          process.env.SALES_CHANNEL_ID
-        ) {
+        if (process.env.SALES_CHANNEL_ID) {
           const channel =
             await client.channels.fetch(
               process.env.SALES_CHANNEL_ID
             );
 
           if (channel?.isTextBased()) {
-            await channel.send({
-              embeds: [
-                buildSaleEmbed(payload),
-              ],
-            });
+            const order = getOrder(payload);
+
+            const orderId = firstDefined(
+              order?.uniqid,
+              order?.id,
+              payload?.id,
+              payload?.data?.id
+            );
+
+            if (!alreadyProcessed(orderId)) {
+              await channel.send({
+                embeds: [
+                  buildSaleEmbed(payload),
+                ],
+              });
+
+              console.log(
+                `💰 Venta enviada: ${orderId}`
+              );
+            } else {
+              console.log(
+                `⚠️ Venta duplicada ignorada: ${orderId}`
+              );
+            }
           }
         }
       }
 
-      // ===============================
-      // RESTOCK
-      // ===============================
+      // ===========================
+      // WEBHOOK RESTOCK
+      // ===========================
 
       if (
         event.includes("stock") ||
         event.includes("restock") ||
         event.includes("product.updated")
       ) {
-        if (
-          process.env.RESTOCK_CHANNEL_ID
-        ) {
+        if (process.env.RESTOCK_CHANNEL_ID) {
           const channel =
             await client.channels.fetch(
               process.env.RESTOCK_CHANNEL_ID
@@ -398,6 +437,10 @@ app.post(
                 buildRestockEmbed(payload),
               ],
             });
+
+            console.log(
+              "📦 Restock webhook enviado"
+            );
           }
         }
       }
@@ -419,156 +462,152 @@ app.post(
 );
 
 // ===============================
-// TEST SALE
+// TEST VENTA
 // ===============================
 
-app.get(
-  "/testventa",
-  async (_req, res) => {
-    try {
-      if (
-        !process.env.SALES_CHANNEL_ID
-      ) {
-        return res.status(500).json({
-          ok: false,
-          error:
-            "SALES_CHANNEL_ID no está configurado",
-        });
-      }
-
-      const channel =
-        await client.channels.fetch(
-          process.env.SALES_CHANNEL_ID
-        );
-
-      if (!channel?.isTextBased()) {
-        return res.status(500).json({
-          ok: false,
-          error:
-            "El canal de ventas no es válido",
-        });
-      }
-
-      const fakeSale = {
-        order: {
-          id: "TEST-001",
-          total: "5.00",
-          currency: "USD",
-          payment_method: "Test",
-          customer_email:
-            "cliente-prueba@simbashop.com",
-          items: [
-            {
-              product_title:
-                "Producto de prueba",
-              variant_title:
-                "Default",
-              unit_price: "5.00",
-            },
-          ],
-        },
-      };
-
-      await channel.send({
-        embeds: [
-          buildSaleEmbed(fakeSale),
-        ],
-      });
-
-      return res.json({
-        ok: true,
-        message:
-          "Venta de prueba enviada a Discord",
-      });
-    } catch (error) {
-      console.error(
-        "Test venta error:",
-        error
-      );
-
+app.get("/testventa", async (_req, res) => {
+  try {
+    if (!process.env.SALES_CHANNEL_ID) {
       return res.status(500).json({
         ok: false,
-        error: error.message,
+        error:
+          "SALES_CHANNEL_ID no está configurado",
       });
     }
-  }
-);
 
-// ===============================
-// TEST RESTOCK
-// ===============================
-
-app.get(
-  "/teststock",
-  async (_req, res) => {
-    try {
-      if (
-        !process.env.RESTOCK_CHANNEL_ID
-      ) {
-        return res.status(500).json({
-          ok: false,
-          error:
-            "RESTOCK_CHANNEL_ID no está configurado",
-        });
-      }
-
-      const channel =
-        await client.channels.fetch(
-          process.env.RESTOCK_CHANNEL_ID
-        );
-
-      if (!channel?.isTextBased()) {
-        return res.status(500).json({
-          ok: false,
-          error:
-            "El canal de stock no es válido",
-        });
-      }
-
-      const fakeRestock = {
-        product: {
-          title:
-            "Producto de prueba",
-          variant_title:
-            "Default",
-          stock: 10,
-          price: "0.01 EUR",
-          product_url:
-            "https://simbashop.myshoppex.io",
-          image_url: "",
-        },
-      };
-
-      await channel.send({
-        content: "@everyone",
-        allowedMentions: {
-          parse: ["everyone"],
-        },
-        embeds: [
-          buildRestockEmbed(
-            fakeRestock
-          ),
-        ],
-      });
-
-      return res.json({
-        ok: true,
-        message:
-          "Aviso de stock enviado a Discord",
-      });
-    } catch (error) {
-      console.error(
-        "Test stock error:",
-        error
+    const channel =
+      await client.channels.fetch(
+        process.env.SALES_CHANNEL_ID
       );
 
+    if (!channel?.isTextBased()) {
       return res.status(500).json({
         ok: false,
-        error: error.message,
+        error:
+          "El canal de ventas no es válido",
       });
     }
+
+    const fakeSale = {
+      order: {
+        id: "TEST-001",
+        total: "5.00",
+        currency: "USD",
+        payment_method: "Test",
+        customer_email:
+          "cliente-prueba@simbashop.com",
+        location: "Argentina",
+        items: [
+          {
+            product_title:
+              "Producto de prueba",
+            quantity: 1,
+            unit_price: "5.00",
+          },
+        ],
+      },
+    };
+
+    await channel.send({
+      embeds: [
+        buildSaleEmbed(fakeSale),
+      ],
+    });
+
+    return res.json({
+      ok: true,
+      message:
+        "Venta de prueba enviada a Discord",
+    });
+  } catch (error) {
+    console.error(
+      "Test venta error:",
+      error
+    );
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
   }
-);
+});
+
+// ===============================
+// TEST STOCK
+// ===============================
+
+app.get("/teststock", async (_req, res) => {
+  try {
+    if (!process.env.RESTOCK_CHANNEL_ID) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "RESTOCK_CHANNEL_ID no está configurado",
+      });
+    }
+
+    const channel =
+      await client.channels.fetch(
+        process.env.RESTOCK_CHANNEL_ID
+      );
+
+    if (!channel?.isTextBased()) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "El canal de stock no es válido",
+      });
+    }
+
+    const fakeRestock = {
+      product: {
+        title:
+          "roblox accounts unchecked",
+        variant_title: "Default",
+        stock: 25,
+        price: "0.01 EUR",
+        product_url:
+          "https://simbashop.myshoppex.io/product/roblox-accounts-unchecked",
+        image_url: "",
+      },
+    };
+
+    const embed =
+      buildRestockEmbed(
+        fakeRestock
+      );
+
+    embed.addFields({
+      name: "➕ Added",
+      value: "+1",
+      inline: true,
+    });
+
+    await channel.send({
+      content: "@everyone",
+      allowedMentions: {
+        parse: ["everyone"],
+      },
+      embeds: [embed],
+    });
+
+    return res.json({
+      ok: true,
+      message:
+        "Aviso de stock enviado a Discord",
+    });
+  } catch (error) {
+    console.error(
+      "Test stock error:",
+      error
+    );
+
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
 
 // ===============================
 // TEST SHOPPEX API
@@ -578,9 +617,7 @@ app.get(
   "/testshoppex",
   async (_req, res) => {
     try {
-      if (
-        !process.env.SHOPPEX_API_KEY
-      ) {
+      if (!process.env.SHOPPEX_API_KEY) {
         return res.status(500).json({
           ok: false,
           error:
@@ -588,15 +625,15 @@ app.get(
         });
       }
 
-      const response =
-        await fetch(
-          "https://api.shoppex.io/dev/v1/products",
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-            },
-          }
-        );
+      const response = await fetch(
+        "https://api.shoppex.io/dev/v1/products",
+        {
+          headers: {
+            Authorization:
+              `Bearer ${process.env.SHOPPEX_API_KEY}`,
+          },
+        }
+      );
 
       const data =
         await response.json();
@@ -607,26 +644,16 @@ app.get(
           data
         );
 
-        return res
-          .status(response.status)
-          .json({
-            ok: false,
-            error: data,
-          });
+        return res.status(
+          response.status
+        ).json({
+          ok: false,
+          error: data,
+        });
       }
 
       const products =
-        (data.data || []).map(
-          (product) => ({
-            id: product.id,
-            title: product.title,
-            stock: product.stock,
-            available_stock:
-              product.available_stock,
-            variants:
-              product.variants || [],
-          })
-        );
+        data.data || [];
 
       console.log(
         "Shoppex products:",
@@ -635,7 +662,22 @@ app.get(
 
       return res.json({
         ok: true,
-        products,
+        products: products.map(
+          (product) => ({
+            id: product.id,
+            title: product.title,
+            stock: product.stock,
+            available_stock:
+              product.available_stock,
+            price: product.price,
+            currency:
+              product.currency,
+            image_url:
+              product.image_url,
+            variants:
+              product.variants || [],
+          })
+        ),
       });
     } catch (error) {
       console.error(
@@ -661,9 +703,7 @@ let stockMonitorInitialized = false;
 
 async function checkShoppexStock() {
   try {
-    if (
-      !process.env.SHOPPEX_API_KEY
-    ) {
+    if (!process.env.SHOPPEX_API_KEY) {
       console.log(
         "Stock monitor: SHOPPEX_API_KEY no está configurada."
       );
@@ -674,15 +714,15 @@ async function checkShoppexStock() {
       return;
     }
 
-    const response =
-      await fetch(
-        "https://api.shoppex.io/dev/v1/products",
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-          },
-        }
-      );
+    const response = await fetch(
+      "https://api.shoppex.io/dev/v1/products",
+      {
+        headers: {
+          Authorization:
+            `Bearer ${process.env.SHOPPEX_API_KEY}`,
+        },
+      }
+    );
 
     const data =
       await response.json();
@@ -698,36 +738,42 @@ async function checkShoppexStock() {
     const products =
       data.data || [];
 
-    // ===============================
+    console.log(
+      `🔎 Stock check: ${products.length} productos`
+    );
+
+    // ===========================
     // PRIMERA REVISIÓN
-    // ===============================
+    // ===========================
 
     if (!stockMonitorInitialized) {
       for (const product of products) {
         const stock = Number(
           product.available_stock ??
-            product.stock ??
-            0
+          product.stock ??
+          0
         );
 
         previousStock.set(
           product.id,
           stock
         );
+
+        console.log(
+          `📦 ${product.title}: ${stock}`
+        );
       }
 
       stockMonitorInitialized = true;
 
       console.log(
-        `Stock monitor iniciado. ${products.length} productos registrados.`
+        `✅ Stock monitor iniciado. ${products.length} productos registrados.`
       );
 
       return;
     }
 
-    if (
-      !process.env.RESTOCK_CHANNEL_ID
-    ) {
+    if (!process.env.RESTOCK_CHANNEL_ID) {
       console.log(
         "Stock monitor: RESTOCK_CHANNEL_ID no está configurado."
       );
@@ -741,50 +787,53 @@ async function checkShoppexStock() {
 
     if (!channel?.isTextBased()) {
       console.error(
-        "Stock monitor: canal de stock inválido."
+        "Stock monitor: canal inválido."
       );
       return;
     }
 
-    // ===============================
-    // REVISAR PRODUCTOS
-    // ===============================
+    // ===========================
+    // COMPARAR STOCK
+    // ===========================
 
     for (const product of products) {
-      const currentStock =
-        Number(
-          product.available_stock ??
-            product.stock ??
-            0
-        );
+      const currentStock = Number(
+        product.available_stock ??
+        product.stock ??
+        0
+      );
 
       const oldStock =
         previousStock.get(
           product.id
         );
 
-      // Producto nuevo
-      if (
-        oldStock === undefined
-      ) {
+      if (oldStock === undefined) {
         previousStock.set(
           product.id,
           currentStock
         );
 
+        console.log(
+          `🆕 Producto nuevo: ${product.title} (${currentStock})`
+        );
+
         continue;
       }
 
-      // ===============================
-      // STOCK AUMENTÓ
-      // ===============================
+      console.log(
+        `📊 ${product.title}: ${oldStock} → ${currentStock}`
+      );
+
+      // =========================
+      // RESTOCK DETECTADO
+      // =========================
 
       if (
         currentStock > oldStock
       ) {
         const addedStock =
-          currentStock -
-          oldStock;
+          currentStock - oldStock;
 
         const slug =
           String(
@@ -804,26 +853,19 @@ async function checkShoppexStock() {
         const restockPayload = {
           product: {
             title:
-              product.title ||
-              "Product",
-
+              product.title,
             variant_title:
               "Default",
-
             stock:
               currentStock,
-
             price:
               `${product.price ?? "—"} ${
                 product.currency ?? ""
               }`.trim(),
-
             product_url:
               productUrl,
-
             image_url:
-              product.image_url ||
-              "",
+              product.image_url || "",
           },
         };
 
@@ -834,7 +876,8 @@ async function checkShoppexStock() {
 
         embed.addFields({
           name: "➕ Added",
-          value: `+${addedStock}`,
+          value:
+            `+${addedStock}`,
           inline: true,
         });
 
@@ -847,11 +890,10 @@ async function checkShoppexStock() {
         });
 
         console.log(
-          `📦 Restock detectado: ${product.title} (+${addedStock})`
+          `🚨 RESTOCK DETECTADO: ${product.title} (+${addedStock})`
         );
       }
 
-      // Guardar nuevo stock
       previousStock.set(
         product.id,
         currentStock
@@ -881,7 +923,7 @@ setTimeout(
 );
 
 // ===============================
-// HTTP SERVER
+// SERVER
 // ===============================
 
 app.listen(PORT, () => {
@@ -894,22 +936,17 @@ app.listen(PORT, () => {
 // DISCORD READY
 // ===============================
 
-client.once(
-  "ready",
-  () => {
-    console.log(
-      `Discord connected as ${client.user.tag}`
-    );
-  }
-);
+client.once("ready", () => {
+  console.log(
+    `Discord connected as ${client.user.tag}`
+  );
+});
 
 // ===============================
 // DISCORD LOGIN
 // ===============================
 
-if (
-  !process.env.DISCORD_TOKEN
-) {
+if (!process.env.DISCORD_TOKEN) {
   console.warn(
     "DISCORD_TOKEN is not set yet."
   );
