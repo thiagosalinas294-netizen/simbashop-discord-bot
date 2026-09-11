@@ -41,7 +41,6 @@ function getProductUrl(item, order) {
   );
 }
 
-function buildSaleEmbed(payload) {
   const order = getOrder(payload);
   const item = getFirstItem(order);
 
@@ -52,23 +51,33 @@ function buildSaleEmbed(payload) {
     "Product"
   );
 
-  const variantTitle = firstDefined(
-    item.variant_title,
-    item.variant,
-    "Default"
+  const quantity = firstDefined(
+    item.quantity,
+    item.qty,
+    order.quantity,
+    1
   );
 
-  const price = firstDefined(
+  const total = firstDefined(
+    order.total,
     item.total,
     item.unit_price,
-    order.total
+    "—"
   );
 
   const currency = firstDefined(order.currency, "");
-  const method = firstDefined(
+
+  const payment = firstDefined(
     order.gateway,
     order.payment_method,
     "Unknown"
+  );
+
+  const coupon = firstDefined(
+    order.coupon,
+    order.coupon_code,
+    order.discount_code,
+    "No"
   );
 
   const customer = firstDefined(
@@ -83,29 +92,63 @@ function buildSaleEmbed(payload) {
     "Unknown"
   );
 
-  const imageUrl = firstDefined(
-    item.image_url,
-    item.image,
-    order.image_url
+  const location = firstDefined(
+    order.location,
+    order.customer_location,
+    order.country,
+    "Unknown"
   );
 
-  const productUrl = getProductUrl(item, order);
-
   const embed = new EmbedBuilder()
-    .setTitle("🔥 New sale completed!")
-    .setDescription(`🏷️ **${productTitle}**${variantTitle ? ` — ${variantTitle}` : ""}`)
+    .setColor("#D4AF37")
+    .setTitle("🦁 SIMBA SHOP • New Order")
+    .setDescription(`🛒 **New Sale • ${productTitle}**`)
     .addFields(
-      { name: "💰 Amount", value: money(price, currency), inline: true },
-      { name: "💳 Method", value: String(method), inline: true },
-      { name: "🕘 Status", value: "Completed", inline: true },
-      { name: "🔑 Customer", value: String(customer), inline: false },
-      { name: "🧾 Order", value: String(orderNumber), inline: true },
+      {
+        name: "🔐 Product",
+        value: String(productTitle),
+        inline: false,
+      },
+      {
+        name: "📦 Quantity",
+        value: String(quantity),
+        inline: true,
+      },
+      {
+        name: "💰 Total",
+        value: money(total, currency),
+        inline: true,
+      },
+      {
+        name: "💳 Payment",
+        value: String(payment),
+        inline: true,
+      },
+      {
+        name: "🎟️ Coupon",
+        value: String(coupon),
+        inline: true,
+      },
+      {
+        name: "🆔 Order ID",
+        value: String(orderNumber),
+        inline: true,
+      },
+      {
+        name: "📧 Customer",
+        value: String(customer),
+        inline: false,
+      },
+      {
+        name: "🌎 Location",
+        value: String(location),
+        inline: false,
+      }
     )
-    .setFooter({ text: "🦁 SIMBA SHOP • verified sale" })
+    .setFooter({
+      text: "🦁 SIMBA SHOP • Shoppex",
+    })
     .setTimestamp();
-
-  if (imageUrl) embed.setThumbnail(imageUrl);
-  if (productUrl) embed.setURL(productUrl);
 
   return embed;
 }
