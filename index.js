@@ -32,14 +32,13 @@ function getFirstItem(order) {
 }
 
 function getProductUrl(item, order) {
-  return firstDefined(
+  firstDefined(
     item.product_url,
     item.url,
     order.product_url,
     order.checkout_url,
     ""
   );
-}
 
   const order = getOrder(payload);
   const item = getFirstItem(order);
