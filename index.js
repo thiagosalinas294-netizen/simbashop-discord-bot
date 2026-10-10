@@ -480,7 +480,7 @@ async function getProductStock(productId) {
       );
       return null;
     }
-
+  }
     const stockData = data?.data || data;
 
     const stock = Number(
