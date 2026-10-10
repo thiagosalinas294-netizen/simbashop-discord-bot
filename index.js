@@ -61,20 +61,21 @@ const testShoppexCommand = new SlashCommandBuilder()
   .setDescription("Test the Shoppex API connection");
 
 async function registerCommands() {
-  const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
+ const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 
-  if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.error(
-      "Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID in Railway."
-    );
-    return;
-  }
+console.log("Variables check:", {
+  DISCORD_TOKEN: Boolean(DISCORD_TOKEN),
+  CLIENT_ID: Boolean(CLIENT_ID),
+  GUILD_ID: Boolean(GUILD_ID),
+});
 
-  try {
-    const rest = new REST({ version: "10" }).setToken(
-      DISCORD_TOKEN
-    );
+if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
+  console.error("Missing one or more required variables.");
+  return;
+}
 
+try {
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
     const commands = [
       sayCommand,
       testVentaCommand,
