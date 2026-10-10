@@ -497,11 +497,6 @@ async function getProductStock(productId) {
     );
     return null;
   }
-}
-
-
-    return null;
-}
 
 // ===============================
 // CHECK SHOPPEX STOCK
