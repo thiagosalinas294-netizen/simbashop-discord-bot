@@ -465,7 +465,6 @@ app.get("/testshoppex", async (_req, res) => {
     );
 
     return null;
-  }
 }
 
 // ===============================
