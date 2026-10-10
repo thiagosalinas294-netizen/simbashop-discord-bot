@@ -459,10 +459,46 @@ app.get("/testshoppex", async (_req, res) => {
   }
 });
 
+
+async function getProductStock(productId) {
+  try {
+    const response = await fetch(
+      `https://api.shoppex.io/dev/v1/products/${productId}/stock`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(
+        `❌ Error stock producto ${productId}:`,
+        data
+      );
+      return null;
+    }
+
+    const stockData = data?.data || data;
+
+    const stock = Number(
+      stockData?.available_stock ??
+      stockData?.stock ??
+      0
+    );
+
+    return stock;
+  } catch (error) {
     console.error(
       `❌ Error consultando stock ${productId}:`,
       error.message
     );
+    return null;
+  }
+}
+
 
     return null;
 }
