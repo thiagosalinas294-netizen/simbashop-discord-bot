@@ -155,7 +155,8 @@ function formatMoney(value, currency = "") {
 return String(value) + (currency ? " " + currency : "");
 }
 
-  return `${value}${currency ? ` ${currency}` : ""}`;
+
+return String(value) + (currency ? " " + String(currency) : "");
 }
 
 function safeText(value, fallback = "Unknown") {
