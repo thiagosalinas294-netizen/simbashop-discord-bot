@@ -152,7 +152,7 @@ function formatMoney(value, currency = "") {
     return "—";
   }
 
-  return String(value) + (currency ? " " + currency : "");
+return String(value) + (currency ? " " + currency : "");
 }
 
   return `${value}${currency ? ` ${currency}` : ""}`;
