@@ -527,7 +527,7 @@ async function sendStockTest() {
       stock: 24,
       price: 5,
       currency: "USD",
-      product_url: "https://simbashop.myshoppex.io/",
+    product_url: "https://simba-market.mysellauth.com/",
     },
   };
 
