@@ -1,7 +1,9 @@
-
+```js
 require("dotenv").config();
 
 const express = require("express");
+const crypto = require("crypto");
+
 const {
   Client,
   GatewayIntentBits,
@@ -19,9 +21,8 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const previousStock = new Map();
-let stockMonitorInitialized = false;
 const processedOrders = new Map();
+const processedDeliveries = new Map();
 
 // =====================================
 // SLASH COMMANDS
@@ -56,41 +57,36 @@ const testStockCommand = new SlashCommandBuilder()
   .setName("teststock")
   .setDescription("Test the restock notification");
 
-const testShoppexCommand = new SlashCommandBuilder()
-  .setName("testshoppex")
-  .setDescription("Test the Shoppex API connection");
-
 async function registerCommands() {
- const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
+  const {
+    DISCORD_TOKEN,
+    CLIENT_ID,
+    GUILD_ID,
+  } = process.env;
 
-console.log("Variables check:", {
-  DISCORD_TOKEN: Boolean(DISCORD_TOKEN),
-  CLIENT_ID: Boolean(CLIENT_ID),
-  GUILD_ID: Boolean(GUILD_ID),
-});
+  if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
+    console.error("Missing Discord environment variables.");
+    return;
+  }
 
-if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-  console.error("Missing one or more required variables.");
-  return;
-}
-
-try {
-  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-    const commands = [
-      sayCommand,
-      testVentaCommand,
-      testStockCommand,
-      testShoppexCommand,
-    ].map((command) => command.toJSON());
+  try {
+    const rest = new REST({ version: "10" })
+      .setToken(DISCORD_TOKEN);
 
     await rest.put(
       Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
+      {
+        body: [
+          sayCommand,
+          testVentaCommand,
+          testStockCommand,
+        ].map((command) => command.toJSON()),
+      }
     );
 
-    console.log("Slash commands registered successfully.");
+    console.log("Slash commands registered.");
   } catch (error) {
-    console.error("Failed to register commands:", error);
+    console.error("Command registration failed:", error);
   }
 }
 
@@ -107,7 +103,51 @@ function firstDefined(...values) {
   );
 }
 
-function money(value, currency = "") {
+function getOrder(payload) {
+  return (
+    payload?.data?.order ||
+    payload?.data ||
+    payload?.order ||
+    payload
+  );
+}
+
+function getFirstItem(order) {
+  return (
+    order?.items?.[0] ||
+    order?.line_items?.[0] ||
+    order?.products?.[0] ||
+    order?.product ||
+    {}
+  );
+}
+
+function getEventName(payload, req) {
+  return String(
+    firstDefined(
+      req.headers["x-sellauth-event"],
+      req.headers["x-webhook-event"],
+      payload?.event,
+      payload?.type,
+      payload?.name,
+      ""
+    )
+  ).toLowerCase();
+}
+
+function getDeliveryId(payload, req) {
+  return String(
+    firstDefined(
+      req.headers["x-sellauth-delivery"],
+      req.headers["x-webhook-id"],
+      payload?.delivery_id,
+      payload?.id,
+      ""
+    )
+  );
+}
+
+function formatMoney(value, currency = "") {
   if (value === undefined || value === null || value === "") {
     return "—";
   }
@@ -115,42 +155,48 @@ function money(value, currency = "") {
   return `${value}${currency ? ` ${currency}` : ""}`;
 }
 
-function getOrder(payload) {
-  return (
-    payload?.data?.order ||
-    payload?.order ||
-    payload?.data ||
-    payload
-  );
-}
-
-function getFirstItem(order) {
-  return order?.items?.[0] || order?.line_items?.[0] || {};
-}
-
-function getProductUrl(item, order) {
-  return firstDefined(
-    item.product_url,
-    item.url,
-    order.product_url,
-    order.checkout_url,
-    ""
-  );
+function safeText(value, fallback = "Unknown") {
+  const text = String(firstDefined(value, fallback));
+  return text.slice(0, 1000);
 }
 
 // =====================================
-// SALE EMBED
+// EMBEDS
 // =====================================
 
 function buildSaleEmbed(payload) {
   const order = getOrder(payload);
   const item = getFirstItem(order);
 
-  const productTitle = firstDefined(
+  const product = firstDefined(
     item.product_title,
     item.title,
+    item.name,
     order.product_title,
+    order.product_name,
     "Product"
+  );
+
+  const orderId = firstDefined(
+    order.uniqid,
+    order.order_id,
+    order.id,
+    "Unknown"
+  );
+
+  const total = firstDefined(
+    order.total,
+    order.price,
+    order.amount,
+    item.total,
+    item.unit_price,
+    "—"
+  );
+
+  const currency = firstDefined(
+    order.currency,
+    order.currency_code,
+    ""
   );
 
   const quantity = firstDefined(
@@ -160,131 +206,115 @@ function buildSaleEmbed(payload) {
     1
   );
 
-  const total = firstDefined(
-    order.total,
-    item.total,
-    item.unit_price,
-    "—"
-  );
-
-  const currency = firstDefined(order.currency, "");
   const payment = firstDefined(
     order.gateway,
     order.payment_method,
+    order.payment?.method,
     "Unknown"
   );
 
   const coupon = firstDefined(
-    order.coupon,
     order.coupon_code,
     order.discount_code,
+    order.coupon,
     "No"
   );
 
   const customer = firstDefined(
     order.customer_email,
     order.email,
+    order.customer?.email,
     "Unknown"
   );
-
-  const orderNumber = firstDefined(
-    order.uniqid,
-    order.id,
-    "Unknown"
-  );
-
-  const location = firstDefined(
-    order.location,
-    order.customer_location,
-    order.country,
-    "Unknown"
-  );
-
-  const productUrl = getProductUrl(item, order);
 
   const embed = new EmbedBuilder()
     .setColor("#D4AF37")
     .setTitle("🦁 SIMBA SHOP • New Order")
-    .setDescription(`🛒 **New Sale • ${productTitle}**`)
+    .setDescription(`🛒 **New Sale • ${safeText(product)}**`)
     .addFields(
       {
         name: "🔐 Product",
-        value: String(productTitle).slice(0, 1024),
+        value: safeText(product),
         inline: false,
       },
       {
         name: "📦 Quantity",
-        value: String(quantity),
+        value: safeText(quantity),
         inline: true,
       },
       {
         name: "💰 Total",
-        value: money(total, currency),
+        value: formatMoney(total, currency),
         inline: true,
       },
       {
         name: "💳 Payment",
-        value: String(payment),
+        value: safeText(payment),
         inline: true,
       },
       {
         name: "🎟️ Coupon",
-        value: String(coupon),
+        value: safeText(coupon),
         inline: true,
       },
       {
         name: "🆔 Order ID",
-        value: String(orderNumber),
+        value: safeText(orderId),
         inline: true,
       },
       {
         name: "📧 Customer",
-        value: String(customer),
-        inline: false,
-      },
-      {
-        name: "🌎 Location",
-        value: String(location),
+        value: safeText(customer),
         inline: false,
       }
     )
-    .setFooter({ text: "🦁 SIMBA SHOP • Shoppex" })
+    .setFooter({ text: "🦁 SIMBA SHOP • SellAuth" })
     .setTimestamp();
 
-  if (productUrl) embed.setURL(productUrl);
+  const productUrl = firstDefined(
+    item.product_url,
+    item.url,
+    order.product_url
+  );
+
+  if (
+    typeof productUrl === "string" &&
+    /^https:\/\/\S+$/i.test(productUrl)
+  ) {
+    embed.setURL(productUrl);
+  }
 
   return embed;
 }
-
-// =====================================
-// RESTOCK EMBED
-// =====================================
 
 function buildRestockEmbed(payload) {
   const data = payload?.data || payload;
   const product = data?.product || data;
 
-  const productTitle = firstDefined(
+  const title = firstDefined(
     product.product_title,
     product.title,
+    product.name,
     data.product_title,
     "Product"
   );
 
-  const variantTitle = firstDefined(
+  const variant = firstDefined(
     product.variant_title,
+    product.variant?.name,
     data.variant_title,
     "Default"
   );
 
   const stock = firstDefined(
-    product.stock,
-    data.stock,
     product.available_stock,
-    data.available_stock,
+    product.stock,
     product.quantity,
+    product.stock_quantity,
+    data.available_stock,
+    data.stock,
     data.quantity,
-    "?"
+    "Updated"
   );
 
   const price = firstDefined(
@@ -293,100 +323,71 @@ function buildRestockEmbed(payload) {
     "—"
   );
 
-  const imageUrl = firstDefined(
-    product.image_url,
-    product.image,
-    data.image_url,
-    ""
-  );
-
   const productUrl = firstDefined(
     product.url,
     product.product_url,
-    data.product_url,
-    ""
+    data.product_url
   );
 
   const embed = new EmbedBuilder()
     .setColor("#D4AF37")
-    .setTitle("📦 Restock!")
-    .setDescription(
-      `🛍️ **${productTitle} — ${variantTitle}**`
-    )
+    .setTitle("📦 SIMBA SHOP • Restock")
+    .setDescription(`🛍️ **${safeText(title)}**`)
     .addFields(
       {
         name: "📦 Variant",
-        value: String(variantTitle),
+        value: safeText(variant),
         inline: true,
       },
       {
         name: "💰 Price",
-        value: String(price),
+        value: safeText(price),
         inline: true,
       },
       {
         name: "📊 Stock",
-        value: String(stock),
+        value: safeText(stock),
         inline: true,
-      },
-      {
-        name: "🛒 Buy Now",
-        value: productUrl
-          ? `[Click here to purchase](${productUrl})`
-          : "Product link unavailable",
-        inline: false,
       }
     )
-    .setFooter({
-      text: "🦁 SIMBA SHOP • Powered by Shoppex",
-    })
+    .setFooter({ text: "🦁 SIMBA SHOP • SellAuth" })
     .setTimestamp();
 
-  if (imageUrl) embed.setImage(imageUrl);
-  if (productUrl) embed.setURL(productUrl);
+  if (
+    typeof productUrl === "string" &&
+    /^https:\/\/\S+$/i.test(productUrl)
+  ) {
+    embed.addFields({
+      name: "🛒 Buy Now",
+      value: `[Click here to purchase](${productUrl})`,
+      inline: false,
+    });
+
+    embed.setURL(productUrl);
+  }
 
   return embed;
 }
 
 // =====================================
-// DUPLICATE SALE PROTECTION
+// DISCORD CHANNEL HELPERS
 // =====================================
 
-function isDuplicateSale(orderNumber) {
-  if (!orderNumber || orderNumber === "Unknown") {
-    return false;
+async function sendToChannel(channelId, message) {
+  if (!channelId) {
+    throw new Error("Channel ID is not configured.");
   }
 
-  if (processedOrders.has(String(orderNumber))) {
-    return true;
-  }
-
-  processedOrders.set(String(orderNumber), Date.now());
-
-  setTimeout(() => {
-    processedOrders.delete(String(orderNumber));
-  }, 120000);
-
-  return false;
-}
-
-// =====================================
-// TEST HELPERS
-// =====================================
-
-async function sendSaleTest() {
-  if (!process.env.SALES_CHANNEL_ID) {
-    throw new Error("SALES_CHANNEL_ID is not configured.");
-  }
-
-  const channel = await client.channels.fetch(
-    process.env.SALES_CHANNEL_ID
-  );
+  const channel = await client.channels.fetch(channelId);
 
   if (!channel?.isTextBased() || !channel.send) {
-    throw new Error("Invalid sales channel.");
+    throw new Error("Invalid Discord text channel.");
   }
 
+  await channel.send(message);
+}
+
+async function sendSaleTest() {
   const fakeSale = {
     order: {
       id: "TEST-001",
@@ -404,24 +405,13 @@ async function sendSaleTest() {
     },
   };
 
-  await channel.send({
-    embeds: [buildSaleEmbed(fakeSale)],
-  });
+  await sendToChannel(
+    process.env.SALES_CHANNEL_ID,
+    { embeds: [buildSaleEmbed(fakeSale)] }
+  );
 }
 
 async function sendStockTest() {
-  if (!process.env.RESTOCK_CHANNEL_ID) {
-    throw new Error("RESTOCK_CHANNEL_ID is not configured.");
-  }
-
-  const channel = await client.channels.fetch(
-    process.env.RESTOCK_CHANNEL_ID
-  );
-
-  if (!channel?.isTextBased() || !channel.send) {
-    throw new Error("Invalid restock channel.");
-  }
-
   const fakeRestock = {
     product: {
       title: "SIMBA SHOP Test Restock",
@@ -436,356 +426,167 @@ async function sendStockTest() {
 
   embed.addFields({
     name: "➕ Added",
-    value: "+1",
+    value: "+1 (test)",
     inline: true,
   });
 
-  await channel.send({ embeds: [embed] });
-}
-
-async function testShoppexConnection() {
-  if (!process.env.SHOPPEX_API_KEY) {
-    throw new Error("SHOPPEX_API_KEY is not configured.");
-  }
-
-  const response = await fetch(
-    "https://api.shoppex.io/dev/v1/products",
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-      },
-    }
+  await sendToChannel(
+    process.env.RESTOCK_CHANNEL_ID,
+    { embeds: [embed] }
   );
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(
-      `Shoppex API returned ${response.status}: ${JSON.stringify(data)}`
-    );
-  }
-
-  return data?.data || [];
 }
 
 // =====================================
-// SHOPPEX WEBHOOK
+// WEBHOOK DEDUPLICATION
 // =====================================
 
-function getEventName(payload, req) {
-  return firstDefined(
-    req.headers["x-shoppex-event"],
-    req.headers["x-webhook-event"],
-    payload?.event,
-    payload?.type,
-    payload?.name,
-    ""
-  );
+function wasProcessed(map, id) {
+  if (!id) return false;
+
+  if (map.has(id)) return true;
+
+  map.set(id, Date.now());
+
+  // Prevent unbounded memory growth.
+  if (map.size > 2000) {
+    const oldestKey = map.keys().next().value;
+    map.delete(oldestKey);
+  }
+
+  return false;
 }
+
+// =====================================
+// SELLAUTH WEBHOOK
+// =====================================
+
+// Configure this URL in SellAuth:
+// https://YOUR-RAILWAY-DOMAIN/webhooks/sellauth?token=YOUR_TOKEN
 
 app.post(
-  "/webhooks/shoppex",
-  express.raw({ type: "*/*" }),
+  "/webhooks/sellauth",
+  express.json({ limit: "1mb" }),
   async (req, res) => {
+    const expectedToken = process.env.SELLAUTH_WEBHOOK_TOKEN;
+    const receivedToken = String(req.query.token || "");
+
+    if (!expectedToken || !receivedToken) {
+      return res.status(401).json({
+        ok: false,
+        error: "Webhook authentication is not configured.",
+      });
+    }
+
+    const expected = Buffer.from(expectedToken);
+    const received = Buffer.from(receivedToken);
+
+    if (
+      expected.length !== received.length ||
+      !crypto.timingSafeEqual(expected, received)
+    ) {
+      return res.status(401).json({
+        ok: false,
+        error: "Invalid webhook token.",
+      });
+    }
+
+    const payload = req.body;
+
+    if (!payload || typeof payload !== "object") {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid JSON payload.",
+      });
+    }
+
+    const event = getEventName(payload, req);
+    const deliveryId = getDeliveryId(payload, req);
+
+    console.log("SellAuth webhook received:", event || "unknown");
+
+    // Acknowledge duplicate deliveries.
+    if (
+      deliveryId &&
+      wasProcessed(processedDeliveries, deliveryId)
+    ) {
+      return res.status(200).json({
+        ok: true,
+        duplicate: true,
+      });
+    }
+
     try {
-      const raw = Buffer.isBuffer(req.body)
-        ? req.body
-        : Buffer.from(String(req.body || ""));
-
-      let payload;
-
-      try {
-        payload = JSON.parse(raw.toString("utf8"));
-      } catch {
-        return res.status(400).json({
-          ok: false,
-          error: "Invalid JSON",
-        });
-      }
-
-      const eventName = getEventName(payload, req);
-      const event = String(eventName).toLowerCase();
-
-      console.log("Shoppex webhook:", event || "unknown event");
-
-      if (
+      // Sales: only paid/completed orders.
+      const isPaidOrder =
         event.includes("paid") ||
-        event.includes("order.paid") ||
-        event.includes("order:paid")
-      ) {
-        if (process.env.SALES_CHANNEL_ID) {
-          const channel = await client.channels.fetch(
-            process.env.SALES_CHANNEL_ID
+        event.includes("completed") ||
+        event.includes("complete");
+
+      const isOrderEvent =
+        event.includes("order") ||
+        event.includes("payment");
+
+      if (isOrderEvent && isPaidOrder) {
+        const order = getOrder(payload);
+
+        const orderId = String(
+          firstDefined(
+            order.uniqid,
+            order.order_id,
+            order.id,
+            deliveryId,
+            ""
+          )
+        );
+
+        if (!wasProcessed(processedOrders, orderId)) {
+          await sendToChannel(
+            process.env.SALES_CHANNEL_ID,
+            { embeds: [buildSaleEmbed(payload)] }
           );
 
-          if (channel?.isTextBased() && channel.send) {
-            const order = getOrder(payload);
-            const orderNumber = firstDefined(
-              order.uniqid,
-              order.id,
-              ""
-            );
-
-            if (!isDuplicateSale(orderNumber)) {
-              await channel.send({
-                embeds: [buildSaleEmbed(payload)],
-              });
-
-              console.log("Sale notification sent:", orderNumber);
-            }
-          }
+          console.log("Sale notification sent:", orderId);
         }
       }
 
-      if (
+      // Restock: event names must match those emitted by SellAuth.
+      const isStockEvent =
         event.includes("stock") ||
         event.includes("restock") ||
-        event.includes("product.updated")
-      ) {
-        if (process.env.RESTOCK_CHANNEL_ID) {
-          const channel = await client.channels.fetch(
-            process.env.RESTOCK_CHANNEL_ID
-          );
+        event.includes("product.available");
 
-          if (channel?.isTextBased() && channel.send) {
-            await channel.send({
-              content: "@everyone",
-              allowedMentions: { parse: ["everyone"] },
-              embeds: [buildRestockEmbed(payload)],
-            });
+      if (isStockEvent) {
+        await sendToChannel(
+          process.env.RESTOCK_CHANNEL_ID,
+          {
+            content: "@everyone",
+            allowedMentions: { parse: ["everyone"] },
+            embeds: [buildRestockEmbed(payload)],
           }
-        }
+        );
+
+        console.log("Restock notification sent.");
       }
 
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error("Webhook error:", error);
+      console.error("SellAuth webhook error:", error);
 
       return res.status(500).json({
         ok: false,
-        error: "Internal server error",
+        error: "Failed to process webhook.",
       });
     }
   }
 );
 
 // =====================================
-// HTTP TEST ROUTES
+// BASIC HEALTH CHECK
 // =====================================
 
-app.get("/testventa", async (_req, res) => {
-  try {
-    await sendSaleTest();
-
-    return res.json({
-      ok: true,
-      message: "Sales test sent.",
-    });
-  } catch (error) {
-    console.error("Test sale error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
+app.get("/", (_req, res) => {
+  res.status(200).send("SIMBA SHOP bot is running.");
 });
-
-app.get("/teststock", async (_req, res) => {
-  try {
-    await sendStockTest();
-
-    return res.json({
-      ok: true,
-      message: "Restock test sent.",
-    });
-  } catch (error) {
-    console.error("Test stock error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-app.get("/testshoppex", async (_req, res) => {
-  try {
-    const products = await testShoppexConnection();
-
-    return res.json({
-      ok: true,
-      products: products.map((product) => ({
-        id: product.id,
-        title: product.title,
-        stock: product.stock,
-        available_stock: product.available_stock,
-      })),
-    });
-  } catch (error) {
-    console.error("Shoppex API test error:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: error.message,
-    });
-  }
-});
-
-// =====================================
-// SHOPPEX STOCK MONITOR
-// =====================================
-
-async function getProductStock(productId) {
-  try {
-    const response = await fetch(
-      `https://api.shoppex.io/dev/v1/products/${productId}/stock`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-        },
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error(
-        `Stock error for ${productId}:`,
-        data
-      );
-      return null;
-    }
-
-    const stockData = data?.data || data;
-
-    return Number(
-      stockData?.available_stock ??
-      stockData?.stock ??
-      0
-    );
-  } catch (error) {
-    console.error("Stock request error:", error.message);
-    return null;
-  }
-}
-
-async function checkShoppexStock() {
-  try {
-    if (!process.env.SHOPPEX_API_KEY || !client.isReady()) {
-      return;
-    }
-
-    const response = await fetch(
-      "https://api.shoppex.io/dev/v1/products",
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.SHOPPEX_API_KEY}`,
-        },
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error("Shoppex products error:", data);
-      return;
-    }
-
-    const products = data?.data || [];
-    const productsWithStock = [];
-
-    for (const product of products) {
-      const currentStock = await getProductStock(product.id);
-
-      if (currentStock === null) continue;
-
-      productsWithStock.push({
-        ...product,
-        realStock: currentStock,
-      });
-    }
-
-    if (!stockMonitorInitialized) {
-      for (const product of productsWithStock) {
-        previousStock.set(product.id, product.realStock);
-      }
-
-      stockMonitorInitialized = true;
-      console.log(
-        `Stock monitor initialized: ${productsWithStock.length} products.`
-      );
-      return;
-    }
-
-    if (!process.env.RESTOCK_CHANNEL_ID) return;
-
-    const channel = await client.channels.fetch(
-      process.env.RESTOCK_CHANNEL_ID
-    );
-
-    if (!channel?.isTextBased() || !channel.send) {
-      console.error("Invalid restock channel.");
-      return;
-    }
-
-    for (const product of productsWithStock) {
-      const currentStock = product.realStock;
-      const oldStock = previousStock.get(product.id);
-
-      if (oldStock === undefined) {
-        previousStock.set(product.id, currentStock);
-        continue;
-      }
-
-      if (currentStock > oldStock) {
-        const addedStock = currentStock - oldStock;
-
-        const slug = String(product.title || "product")
-          .toLowerCase()
-          .trim()
-          .replace(/\s+/g, "-")
-          .replace(/[^a-z0-9-]/g, "");
-
-        const productUrl =
-          product.url ||
-          product.product_url ||
-          `https://simbashop.myshoppex.io/product/${slug}`;
-
-        const embed = buildRestockEmbed({
-          product: {
-            title: product.title,
-            variant_title: "Default",
-            stock: currentStock,
-            price: product.price ?? "—",
-            product_url: productUrl,
-            image_url: product.image_url || "",
-          },
-        });
-
-        embed.addFields({
-          name: "➕ Added",
-          value: `+${addedStock}`,
-          inline: true,
-        });
-
-        await channel.send({
-          content: "@everyone",
-          allowedMentions: { parse: ["everyone"] },
-          embeds: [embed],
-        });
-
-        console.log(
-          `Restock detected: ${product.title} (+${addedStock})`
-        );
-      }
-
-      previousStock.set(product.id, currentStock);
-    }
-  } catch (error) {
-    console.error("Stock monitor error:", error.message);
-  }
-}
 
 // =====================================
 // DISCORD INTERACTIONS
@@ -799,78 +600,56 @@ client.on("interactionCreate", async (interaction) => {
       const allowedUserId = process.env.SAY_ALLOWED_USER_ID;
 
       if (!allowedUserId) {
-        await interaction.reply({
-          content:
-            "The owner must configure SAY_ALLOWED_USER_ID in Railway.",
+        return interaction.reply({
+          content: "SAY_ALLOWED_USER_ID is not configured.",
           ephemeral: true,
         });
-        return;
       }
 
       if (interaction.user.id !== allowedUserId) {
-        await interaction.reply({
+        return interaction.reply({
           content: "You are not allowed to use this command.",
           ephemeral: true,
         });
-        return;
       }
 
-      const targetChannel =
-        interaction.options.getChannel("canal", true);
+      const channel = interaction.options.getChannel("canal", true);
+      const message = interaction.options.getString("mensaje", true);
 
-      const message =
-        interaction.options.getString("mensaje", true);
-
-      if (!targetChannel.isTextBased() || !targetChannel.send) {
-        await interaction.reply({
+      if (!channel.isTextBased() || !channel.send) {
+        return interaction.reply({
           content: "Please choose a text channel.",
           ephemeral: true,
         });
-        return;
       }
 
-      await targetChannel.send({
+      await channel.send({
         content: message,
         allowedMentions: { parse: [] },
       });
 
-      await interaction.reply({
-        content: `Message sent to ${targetChannel}.`,
+      return interaction.reply({
+        content: `Message sent to ${channel}.`,
         ephemeral: true,
       });
-
-      return;
     }
 
     if (interaction.commandName === "testventa") {
       await interaction.deferReply({ ephemeral: true });
       await sendSaleTest();
 
-      await interaction.editReply(
+      return interaction.editReply(
         "✅ Sales test sent to the configured channel."
       );
-      return;
     }
 
     if (interaction.commandName === "teststock") {
       await interaction.deferReply({ ephemeral: true });
       await sendStockTest();
 
-      await interaction.editReply(
+      return interaction.editReply(
         "✅ Restock test sent to the configured channel."
       );
-      return;
-    }
-
-    if (interaction.commandName === "testshoppex") {
-      await interaction.deferReply({ ephemeral: true });
-
-      const products = await testShoppexConnection();
-
-      await interaction.editReply(
-        `✅ Shoppex connected. Products found: ${products.length}.`
-      );
-      return;
     }
   } catch (error) {
     console.error(
@@ -892,7 +671,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // =====================================
-// SERVER AND LOGIN
+// START SERVER AND BOT
 // =====================================
 
 app.listen(PORT, () => {
@@ -901,11 +680,7 @@ app.listen(PORT, () => {
 
 client.once("ready", async () => {
   console.log(`Discord connected as ${client.user.tag}`);
-
   await registerCommands();
-
-  setTimeout(checkShoppexStock, 5000);
-  setInterval(checkShoppexStock, 30000);
 });
 
 if (!process.env.DISCORD_TOKEN) {
@@ -915,3 +690,4 @@ if (!process.env.DISCORD_TOKEN) {
     console.error("Discord login failed:", error.message);
   });
 }
+```
