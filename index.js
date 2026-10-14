@@ -336,7 +336,7 @@ function buildRestockEmbed(payload) {
   const embed = new EmbedBuilder()
     .setColor("#D4AF37")
     .setTitle("📦 SIMBA SHOP • Restock")
-    .setDescription(`🛍️ **${safeText(title)}**`)
+  .setDescription("**" + safeText(title) + "**")
     .addFields(
       {
         name: "📦 Variant",
