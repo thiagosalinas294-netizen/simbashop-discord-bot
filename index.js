@@ -11,10 +11,12 @@ const {
   ChannelType,
   REST,
   Routes,
+  MessageFlags,
 } = require("discord.js");
 
 const app = express();
-const PORT = Number(process.env.PORT || 10000);
+const PORT = Number(process.env.PORT || 8080);
+const GOLD = 0xD4AF37;
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -25,9 +27,9 @@ const client = new Client({
 const processedOrders = new Map();
 const processedDeliveries = new Map();
 
-// =====================================
+// ================================
 // SLASH COMMANDS
-// =====================================
+// ================================
 
 const sayCommand = new SlashCommandBuilder()
   .setName("say")
@@ -68,8 +70,7 @@ async function registerCommands() {
     return;
   }
 
-  const rest = new REST({ version: "10" })
-    .setToken(DISCORD_TOKEN);
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
   await rest.put(
     Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
@@ -85,9 +86,9 @@ async function registerCommands() {
   console.log("Slash commands registered.");
 }
 
-// =====================================
+// ================================
 // HELPERS
-// =====================================
+// ================================
 
 function firstDefined(...values) {
   return values.find(
@@ -98,17 +99,32 @@ function firstDefined(...values) {
   );
 }
 
-function safeText(value, fallback = "Unknown") {
-  return String(firstDefined(value, fallback)).slice(0, 1000);
+function safeText(value, fallback = "Not available") {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "object") {
+    if (value.name) return String(value.name);
+    if (value.title) return String(value.title);
+    if (value.email) return String(value.email);
+
+    try {
+      return JSON.stringify(value).slice(0, 1000);
+    } catch {
+      return fallback;
+    }
+  }
+
+  return String(value).slice(0, 1000);
 }
 
 function formatMoney(value, currency = "") {
   if (value === undefined || value === null || value === "") {
-    return "—";
+    return "Not available";
   }
 
-  return String(value) +
-    (currency ? " " + String(currency) : "");
+  return String(value) + (currency ? " " + String(currency) : "");
 }
 
 function getOrder(payload) {
@@ -120,13 +136,20 @@ function getOrder(payload) {
   );
 }
 
-function getFirstItem(order) {
+function getProduct(payload) {
+  const order = getOrder(payload);
+
   return (
+    payload?.data?.product ||
+    payload?.product ||
+    payload?.data?.item ||
+    payload?.item ||
     order?.items?.[0] ||
     order?.line_items?.[0] ||
     order?.products?.[0] ||
     order?.product ||
-    {}
+    payload?.data ||
+    payload
   );
 }
 
@@ -169,88 +192,86 @@ function remember(map, id) {
   map.set(id, Date.now());
 
   if (map.size > 2000) {
-    const oldestKey = map.keys().next().value;
-    map.delete(oldestKey);
+    map.delete(map.keys().next().value);
   }
 }
 
-// =====================================
-// SALE EMBED
-// =====================================
+// ================================
+// SALES EMBED
+// ================================
 
 function buildSaleEmbed(payload) {
   const order = getOrder(payload);
-  const item = getFirstItem(order);
+  const product = getProduct(payload);
 
-  const product = firstDefined(
-    item.product_title,
-    item.title,
-    item.name,
-    order.product_title,
-    order.product_name,
-    "Product"
+  const productName = firstDefined(
+    product?.name,
+    product?.title,
+    product?.product_name,
+    order?.product_name,
+    order?.name
   );
 
   const orderId = firstDefined(
-    order.uniqid,
-    order.order_id,
-    order.id,
-    "Unknown"
-  );
-
-  const total = firstDefined(
-    order.total,
-    order.price,
-    order.amount,
-    item.total,
-    item.unit_price,
-    "—"
+    order?.id,
+    order?.order_id,
+    order?.uuid,
+    payload?.order_id
   );
 
   const currency = firstDefined(
-    order.currency,
-    order.currency_code,
+    order?.currency,
+    order?.currency_code,
+    payload?.currency,
     ""
   );
 
+  const total = firstDefined(
+    order?.total,
+    order?.total_price,
+    order?.price,
+    order?.amount,
+    payload?.total,
+    payload?.amount
+  );
+
   const quantity = firstDefined(
-    item.quantity,
-    item.qty,
-    order.quantity,
+    product?.quantity,
+    product?.qty,
+    order?.quantity,
     1
   );
 
   const payment = firstDefined(
-    order.gateway,
-    order.payment_method,
-    order.payment?.method,
-    "Unknown"
-  );
-
-  const coupon = firstDefined(
-    order.coupon_code,
-    order.discount_code,
-    order.coupon,
-    "No"
+    order?.payment_method,
+    order?.gateway,
+    order?.payment?.method,
+    payload?.payment_method
   );
 
   const customer = firstDefined(
-    order.customer_email,
-    order.email,
-    order.customer?.email,
-    "Unknown"
+    order?.customer?.email,
+    order?.customer_email,
+    order?.email,
+    payload?.customer?.email
+  );
+
+  const coupon = firstDefined(
+    order?.coupon_code,
+    order?.coupon,
+    payload?.coupon_code
   );
 
   const embed = new EmbedBuilder()
-    .setColor("#D4AF37")
-    .setTitle("SIMBA SHOP | New Order")
+    .setColor(GOLD)
+    .setTitle("SIMBA SHOP | New Sale")
     .setDescription(
-      "**New Sale | " + safeText(product) + "**"
+      "A new order has been received!"
     )
     .addFields(
       {
         name: "Product",
-        value: safeText(product),
+        value: safeText(productName),
         inline: false,
       },
       {
@@ -270,7 +291,7 @@ function buildSaleEmbed(payload) {
       },
       {
         name: "Coupon",
-        value: safeText(coupon),
+        value: safeText(coupon, "None"),
         inline: true,
       },
       {
@@ -281,21 +302,23 @@ function buildSaleEmbed(payload) {
       {
         name: "Customer",
         value: safeText(customer),
-        inline: false,
+        inline: true,
       }
     )
-    .setFooter({ text: "SIMBA SHOP | SellAuth" })
+    .setFooter({
+      text: "SIMBA SHOP | SellAuth",
+    })
     .setTimestamp();
 
   const productUrl = firstDefined(
-    item.product_url,
-    item.url,
-    order.product_url
+    product?.url,
+    product?.product_url,
+    order?.product_url
   );
 
   if (
     typeof productUrl === "string" &&
-    /^https:\/\/\S+$/i.test(productUrl)
+    productUrl.startsWith("https://")
   ) {
     embed.setURL(productUrl);
   }
@@ -303,82 +326,96 @@ function buildSaleEmbed(payload) {
   return embed;
 }
 
-// =====================================
+// ================================
 // RESTOCK EMBED
-// =====================================
+// ================================
 
 function buildRestockEmbed(payload) {
-  const data = payload?.data || payload;
-  const product = data?.product || data;
+  const product = getProduct(payload);
 
-  const title = firstDefined(
-    product.product_title,
-    product.title,
-    product.name,
-    data.product_title,
-    "Product"
+  const productName = firstDefined(
+    product?.name,
+    product?.title,
+    product?.product_name,
+    payload?.product_name
   );
 
   const variant = firstDefined(
-    product.variant_title,
-    product.variant?.name,
-    data.variant_title,
-    "Default"
+    product?.variant_name,
+    product?.variant?.name,
+    product?.variant,
+    payload?.variant_name
   );
 
   const stock = firstDefined(
-    product.available_stock,
-    product.stock,
-    product.quantity,
-    product.stock_quantity,
-    data.available_stock,
-    data.stock,
-    data.quantity,
-    "Updated"
+    product?.stock,
+    product?.stock_quantity,
+    product?.quantity_available,
+    product?.inventory,
+    payload?.stock,
+    payload?.stock_quantity,
+    payload?.quantity,
+    payload?.new_stock
   );
 
   const price = firstDefined(
-    product.price,
-    data.price,
-    "—"
+    product?.price,
+    product?.price_amount,
+    payload?.price
+  );
+
+  const currency = firstDefined(
+    product?.currency,
+    payload?.currency,
+    ""
   );
 
   const productUrl = firstDefined(
-    product.url,
-    product.product_url,
-    data.product_url
+    product?.url,
+    product?.product_url,
+    product?.link,
+    payload?.product_url
   );
 
   const embed = new EmbedBuilder()
-    .setColor("#D4AF37")
-    .setTitle("SIMBA SHOP | Restock")
-    .setDescription("**" + safeText(title) + "**")
+    .setColor(GOLD)
+    .setTitle("SIMBA SHOP | Stock Replenished")
+    .setDescription(
+      "**A product's stock has been updated!**"
+    )
     .addFields(
       {
+        name: "Product",
+        value: safeText(productName),
+        inline: false,
+      },
+      {
         name: "Variant",
-        value: safeText(variant),
+        value: safeText(variant, "Default"),
         inline: true,
       },
       {
         name: "Price",
-        value: safeText(price),
+        value: formatMoney(price, currency),
         inline: true,
       },
       {
-        name: "Stock",
+        name: "Current Stock",
         value: safeText(stock),
         inline: true,
       }
     )
-    .setFooter({ text: "SIMBA SHOP | SellAuth" })
+    .setFooter({
+      text: "SIMBA SHOP | SellAuth",
+    })
     .setTimestamp();
 
   if (
     typeof productUrl === "string" &&
-    /^https:\/\/\S+$/i.test(productUrl)
+    productUrl.startsWith("https://")
   ) {
     embed.addFields({
-      name: "Buy Now",
+      name: "Purchase",
       value: "[Click here to purchase](" + productUrl + ")",
       inline: false,
     });
@@ -389,94 +426,100 @@ function buildRestockEmbed(payload) {
   return embed;
 }
 
-// =====================================
-// DISCORD CHANNEL HELPERS
-// =====================================
+// ================================
+// SEND DISCORD MESSAGE
+// ================================
 
-async function sendToChannel(channelId, message) {
+async function sendToChannel(channelId, options) {
   if (!channelId) {
-    throw new Error("Channel ID is not configured.");
+    throw new Error("The destination channel ID is missing.");
   }
 
   const channel = await client.channels.fetch(channelId);
 
-  if (!channel?.isTextBased() || !channel.send) {
-    throw new Error("Invalid Discord text channel.");
+  if (!channel || !channel.isTextBased() || !channel.send) {
+    throw new Error(
+      "The configured destination is not a valid text channel."
+    );
   }
 
-  await channel.send(message);
+  // Always send Discord message options.
+  // Embeds must be inside the embeds array.
+  return channel.send(options);
 }
 
+// ================================
+// TEST COMMANDS
+// ================================
+
 async function sendSaleTest() {
-  const fakeSale = {
+  const payload = {
     order: {
       id: "TEST-001",
-      total: "5.00",
+      total: 5,
       currency: "USD",
-      payment_method: "Test",
+      quantity: 1,
+      payment_method: "Test payment",
       customer_email: "test@example.com",
-      items: [
-        {
-          product_title: "SIMBA SHOP Test",
-          quantity: 1,
-          unit_price: "5.00",
-        },
-      ],
+      product: {
+        name: "SIMBA SHOP Test Product",
+        price: 5,
+      },
     },
   };
 
   await sendToChannel(
     process.env.SALES_CHANNEL_ID,
-    { embeds: [buildSaleEmbed(fakeSale)] }
+    {
+      embeds: [buildSaleEmbed(payload)],
+      allowedMentions: { parse: [] },
+    }
   );
 }
 
 async function sendStockTest() {
-  const fakeRestock = {
+  const payload = {
     product: {
-      title: "SIMBA SHOP Test Restock",
-      variant_title: "Default",
+      name: "SIMBA SHOP Test Restock",
+      variant_name: "Default",
       stock: 24,
       price: "Test",
       product_url: "https://simbashop.myshoppex.io/",
     },
   };
 
-  const embed = buildRestockEmbed(fakeRestock);
-
-  embed.addFields({
-    name: "Added",
-    value: "+1 (test)",
-    inline: true,
-  });
-
   await sendToChannel(
     process.env.RESTOCK_CHANNEL_ID,
-    { embeds: [embed] }
+    {
+      content: "@everyone",
+      embeds: [buildRestockEmbed(payload)],
+      allowedMentions: { parse: ["everyone"] },
+    }
   );
 }
 
-// =====================================
+// ================================
 // SELLAUTH WEBHOOK
-// =====================================
+// ================================
 
 app.post("/webhooks/sellauth", async (req, res) => {
   const expectedToken = process.env.SELLAUTH_WEBHOOK_TOKEN;
-  const receivedToken = String(req.query.token || "");
+  const receivedToken = req.query.token;
 
-  if (!expectedToken || !receivedToken) {
+  if (!expectedToken) {
     return res.status(401).json({
       ok: false,
       error: "Webhook authentication is not configured.",
     });
   }
 
-  const expected = Buffer.from(expectedToken);
-  const received = Buffer.from(receivedToken);
-
   if (
-    expected.length !== received.length ||
-    !crypto.timingSafeEqual(expected, received)
+    typeof receivedToken !== "string" ||
+    receivedToken.length !== expectedToken.length ||
+    !crypto.timingSafeEqual(
+      Buffer.from(receivedToken),
+      Buffer.from(expectedToken)
+    )
   ) {
     return res.status(401).json({
       ok: false,
@@ -496,12 +539,11 @@ app.post("/webhooks/sellauth", async (req, res) => {
   const event = getEventName(payload, req);
   const deliveryId = getDeliveryId(payload, req);
 
-  console.log("SellAuth event received:", event || "unknown");
+  console.log("SellAuth event received:", event || "(no event name)");
 
-  if (
-    deliveryId &&
-    processedDeliveries.has(deliveryId)
-  ) {
+  if (deliveryId && processedDeliveries.has(deliveryId)) {
+    console.log("Duplicate delivery ignored:", deliveryId);
+
     return res.status(200).json({
       ok: true,
       duplicate: true,
@@ -530,53 +572,67 @@ app.post("/webhooks/sellauth", async (req, res) => {
         process.env.RESTOCK_CHANNEL_ID,
         {
           content: "@everyone",
-          allowedMentions: { parse: ["everyone"] },
           embeds: [buildRestockEmbed(payload)],
+          allowedMentions: {
+            parse: ["everyone"],
+          },
         }
       );
 
-      console.log("Restock notification sent.");
+      console.log("Restock embed sent successfully.");
     } else if (isSaleEvent) {
       const order = getOrder(payload);
 
-      const orderId = String(
-        firstDefined(
-          order.uniqid,
-          order.order_id,
-          order.id,
-          deliveryId,
-          ""
-        )
+      const orderId = firstDefined(
+        order?.id,
+        order?.order_id,
+        order?.uuid,
+        payload?.order_id
       );
 
-      if (
-        !orderId ||
-        !processedOrders.has(orderId)
-      ) {
-        await sendToChannel(
-          process.env.SALES_CHANNEL_ID,
-          { embeds: [buildSaleEmbed(payload)] }
-        );
+      if (orderId && processedOrders.has(String(orderId))) {
+        console.log("Duplicate order ignored:", orderId);
 
-        if (orderId) {
-          remember(processedOrders, orderId);
-        }
+        if (deliveryId) remember(processedDeliveries, deliveryId);
 
-        console.log("Sale notification sent:", orderId || "unknown");
-      } else {
-        console.log("Sale already processed:", orderId);
+        return res.status(200).json({
+          ok: true,
+          duplicate: true,
+        });
       }
+
+      await sendToChannel(
+        process.env.SALES_CHANNEL_ID,
+        {
+          embeds: [buildSaleEmbed(payload)],
+          allowedMentions: {
+            parse: [],
+          },
+        }
+      );
+
+      if (orderId) {
+        remember(processedOrders, String(orderId));
+      }
+
+      console.log("Sale embed sent successfully.");
     } else {
-      console.log("Unrecognized SellAuth event:", event || "unknown");
+      console.log(
+        "Unrecognized SellAuth event. Payload keys:",
+        Object.keys(payload)
+      );
     }
 
     if (deliveryId) {
       remember(processedDeliveries, deliveryId);
     }
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({
+      ok: true,
+      event: event || "unknown",
+    });
   } catch (error) {
-    console.error("SellAuth webhook error:", error);
+    console.error("Webhook processing error:", error);
 
     return res.status(500).json({
       ok: false,
@@ -585,17 +641,17 @@ app.post("/webhooks/sellauth", async (req, res) => {
   }
 });
 
-// =====================================
+// ================================
 // HEALTH CHECK
-// =====================================
+// ================================
 
-app.get("/", (_req, res) => {
+app.get("/", (req, res) => {
   res.status(200).send("SIMBA SHOP bot is running.");
 });
 
-// =====================================
+// ================================
 // DISCORD INTERACTIONS
-// =====================================
+// ================================
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
@@ -604,27 +660,23 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "say") {
       const allowedUserId = process.env.SAY_ALLOWED_USER_ID;
 
-      if (!allowedUserId) {
-        return interaction.reply({
-          content: "SAY_ALLOWED_USER_ID is not configured.",
-          ephemeral: true,
-        });
-      }
-
-      if (interaction.user.id !== allowedUserId) {
+      if (
+        !allowedUserId ||
+        interaction.user.id !== allowedUserId
+      ) {
         return interaction.reply({
           content: "You are not allowed to use this command.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
-      const channel = interaction.options.getChannel("canal", true);
-      const message = interaction.options.getString("mensaje", true);
+      const channel = interaction.options.getChannel("canal");
+      const message = interaction.options.getString("mensaje");
 
-      if (!channel.isTextBased() || !channel.send) {
+      if (!channel || !channel.isTextBased() || !channel.send) {
         return interaction.reply({
-          content: "Please choose a text channel.",
-          ephemeral: true,
+          content: "Please select a valid text channel.",
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -635,52 +687,55 @@ client.on("interactionCreate", async (interaction) => {
 
       return interaction.reply({
         content: "Message sent to " + channel + ".",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
     if (interaction.commandName === "testventa") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        flags: MessageFlags.Ephemeral,
+      });
+
       await sendSaleTest();
 
       return interaction.editReply(
-        "Sales test sent to the configured channel."
+        "Sales embed sent successfully."
       );
     }
 
     if (interaction.commandName === "teststock") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        flags: MessageFlags.Ephemeral,
+      });
+
       await sendStockTest();
 
       return interaction.editReply(
-        "Restock test sent to the configured channel."
+        "Restock embed sent successfully."
       );
     }
   } catch (error) {
-    console.error(
-      "Command " + interaction.commandName + " failed:",
-      error
-    );
+    console.error("Interaction error:", error);
 
-    const message = "Error: " +
-      String(error.message || error).slice(0, 1800);
+    const message =
+      "An error occurred. Check the Railway logs.";
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
     } else {
       await interaction.reply({
         content: message,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       }).catch(() => {});
     }
   }
 });
 
-// =====================================
-// START SERVER AND BOT
-// =====================================
+// ================================
+// START BOT
+// ================================
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log("HTTP server listening on port " + PORT);
 });
 
@@ -690,14 +745,14 @@ client.once("ready", async () => {
   try {
     await registerCommands();
   } catch (error) {
-    console.error("Command registration failed:", error);
+    console.error("Command registration error:", error);
   }
 });
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error("DISCORD_TOKEN is not set in Railway.");
+  console.error("Missing DISCORD_TOKEN in Railway variables.");
 } else {
   client.login(process.env.DISCORD_TOKEN).catch((error) => {
-    console.error("Discord login failed:", error.message);
+    console.error("Discord login error:", error);
   });
 }
