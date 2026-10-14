@@ -3,6 +3,7 @@ require("dotenv").config();
 
 const express = require("express");
 const crypto = require("crypto");
+
 const {
   Client,
   GatewayIntentBits,
@@ -27,9 +28,9 @@ const client = new Client({
 const processedOrders = new Map();
 const processedDeliveries = new Map();
 
-// ================================
+// =====================================
 // SLASH COMMANDS
-// ================================
+// =====================================
 
 const sayCommand = new SlashCommandBuilder()
   .setName("say")
@@ -64,9 +65,7 @@ async function registerCommands() {
   const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 
   if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.error(
-      "Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID."
-    );
+    console.error("Missing Discord command environment variables.");
     return;
   }
 
@@ -86,9 +85,9 @@ async function registerCommands() {
   console.log("Slash commands registered.");
 }
 
-// ================================
-// HELPERS
-// ================================
+// =====================================
+// DATA HELPERS
+// =====================================
 
 function firstDefined(...values) {
   return values.find(
@@ -99,15 +98,48 @@ function firstDefined(...values) {
   );
 }
 
+function getPath(object, path) {
+  return path.split(".").reduce((current, key) => {
+    if (current === null || current === undefined) return undefined;
+    return current[key];
+  }, object);
+}
+
+function findValue(objects, paths) {
+  for (const object of objects) {
+    if (!object || typeof object !== "object") continue;
+
+    for (const path of paths) {
+      const value = getPath(object, path);
+
+      if (
+        value !== undefined &&
+        value !== null &&
+        value !== ""
+      ) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function safeText(value, fallback = "Not available") {
   if (value === undefined || value === null || value === "") {
     return fallback;
   }
 
   if (typeof value === "object") {
-    if (value.name) return String(value.name);
-    if (value.title) return String(value.title);
-    if (value.email) return String(value.email);
+    const readable = firstDefined(
+      value.name,
+      value.title,
+      value.label,
+      value.email,
+      value.id
+    );
+
+    if (readable !== undefined) return String(readable);
 
     try {
       return JSON.stringify(value).slice(0, 1000);
@@ -122,6 +154,15 @@ function safeText(value, fallback = "Not available") {
 function formatMoney(value, currency = "") {
   if (value === undefined || value === null || value === "") {
     return "Not available";
+  }
+
+  if (typeof value === "object") {
+    const amount = firstDefined(value.amount, value.value);
+    const code = firstDefined(value.currency, value.code, currency);
+
+    if (amount !== undefined) {
+      return String(amount) + (code ? " " + String(code) : "");
+    }
   }
 
   return String(value) + (currency ? " " + String(currency) : "");
@@ -154,24 +195,24 @@ function getProduct(payload) {
 }
 
 function getEventName(payload, req) {
-  const headerEvent = firstDefined(
+  const header = firstDefined(
     req.headers["x-sellauth-event"],
     req.headers["x-webhook-event"]
   );
 
-  const event = firstDefined(
-    headerEvent,
+  const raw = firstDefined(
+    header,
     payload?.event,
     payload?.type,
     payload?.name,
     ""
   );
 
-  return String(
-    typeof event === "object"
-      ? event.name || event.type || ""
-      : event
-  ).toLowerCase();
+  if (typeof raw === "object") {
+    return String(raw.name || raw.type || "").toLowerCase();
+  }
+
+  return String(raw).toLowerCase();
 }
 
 function getDeliveryId(payload, req) {
@@ -189,94 +230,97 @@ function getDeliveryId(payload, req) {
 function remember(map, id) {
   if (!id) return;
 
-  map.set(id, Date.now());
+  map.set(String(id), Date.now());
 
   if (map.size > 2000) {
     map.delete(map.keys().next().value);
   }
 }
 
-// ================================
+// =====================================
 // SALES EMBED
-// ================================
+// =====================================
 
 function buildSaleEmbed(payload) {
   const order = getOrder(payload);
   const product = getProduct(payload);
+  const objects = [payload, payload?.data, order, product];
 
-  const productName = firstDefined(
-    product?.name,
-    product?.title,
-    product?.product_name,
-    order?.product_name,
-    order?.name
-  );
+  const name = findValue(objects, [
+    "product_name",
+    "name",
+    "title",
+    "product.name",
+    "product.title",
+    "item.name",
+    "item.title",
+  ]);
 
-  const orderId = firstDefined(
-    order?.id,
-    order?.order_id,
-    order?.uuid,
-    payload?.order_id
-  );
+  const orderId = findValue(objects, [
+    "order_id",
+    "id",
+    "uuid",
+    "order.id",
+    "order.uuid",
+  ]);
 
-  const currency = firstDefined(
-    order?.currency,
-    order?.currency_code,
-    payload?.currency,
-    ""
-  );
+  const total = findValue(objects, [
+    "total",
+    "total_price",
+    "amount",
+    "price",
+    "subtotal",
+    "order.total",
+    "order.amount",
+    "payment.amount",
+  ]);
 
-  const total = firstDefined(
-    order?.total,
-    order?.total_price,
-    order?.price,
-    order?.amount,
-    payload?.total,
-    payload?.amount
-  );
+  const currency = findValue(objects, [
+    "currency",
+    "currency_code",
+    "order.currency",
+    "payment.currency",
+  ]);
 
-  const quantity = firstDefined(
-    product?.quantity,
-    product?.qty,
-    order?.quantity,
-    1
-  );
+  const quantity = findValue(objects, [
+    "quantity",
+    "qty",
+    "order.quantity",
+  ]);
 
-  const payment = firstDefined(
-    order?.payment_method,
-    order?.gateway,
-    order?.payment?.method,
-    payload?.payment_method
-  );
+  const payment = findValue(objects, [
+    "payment_method",
+    "gateway",
+    "payment.method",
+    "payment_method.name",
+  ]);
 
-  const customer = firstDefined(
-    order?.customer?.email,
-    order?.customer_email,
-    order?.email,
-    payload?.customer?.email
-  );
+  const customer = findValue(objects, [
+    "customer.email",
+    "customer_email",
+    "email",
+    "buyer.email",
+  ]);
 
-  const coupon = firstDefined(
-    order?.coupon_code,
-    order?.coupon,
-    payload?.coupon_code
-  );
+  const coupon = findValue(objects, [
+    "coupon_code",
+    "coupon",
+    "discount.code",
+  ]);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setTitle("SIMBA SHOP | New Sale")
-    .setDescription(
-      "A new order has been received!"
-    )
+    .setDescription("A new order has been received!")
     .addFields(
       {
         name: "Product",
-        value: safeText(productName),
+        value: safeText(name),
         inline: false,
       },
       {
         name: "Quantity",
-        value: safeText(quantity),
+        value: safeText(quantity, "1"),
         inline: true,
       },
       {
@@ -305,88 +349,98 @@ function buildSaleEmbed(payload) {
         inline: true,
       }
     )
-    .setFooter({
-      text: "SIMBA SHOP | SellAuth",
-    })
+    .setFooter({ text: "SIMBA SHOP | SellAuth" })
     .setTimestamp();
 
-  const productUrl = firstDefined(
-    product?.url,
-    product?.product_url,
-    order?.product_url
-  );
+  const url = findValue(objects, [
+    "product_url",
+    "url",
+    "product.url",
+    "product.link",
+  ]);
 
-  if (
-    typeof productUrl === "string" &&
-    productUrl.startsWith("https://")
-  ) {
-    embed.setURL(productUrl);
+  if (typeof url === "string" && url.startsWith("https://")) {
+    embed.setURL(url);
   }
 
   return embed;
 }
 
-// ================================
+// =====================================
 // RESTOCK EMBED
-// ================================
+// =====================================
 
 function buildRestockEmbed(payload) {
   const product = getProduct(payload);
+  const objects = [
+    payload,
+    payload?.data,
+    payload?.product,
+    payload?.data?.product,
+    product,
+  ];
 
-  const productName = firstDefined(
-    product?.name,
-    product?.title,
-    product?.product_name,
-    payload?.product_name
-  );
+  const name = findValue(objects, [
+    "product_name",
+    "name",
+    "title",
+    "product.name",
+    "product.title",
+    "item.name",
+    "item.title",
+  ]);
 
-  const variant = firstDefined(
-    product?.variant_name,
-    product?.variant?.name,
-    product?.variant,
-    payload?.variant_name
-  );
+  const variant = findValue(objects, [
+    "variant_name",
+    "variant.name",
+    "variant",
+    "options.name",
+  ]);
 
-  const stock = firstDefined(
-    product?.stock,
-    product?.stock_quantity,
-    product?.quantity_available,
-    product?.inventory,
-    payload?.stock,
-    payload?.stock_quantity,
-    payload?.quantity,
-    payload?.new_stock
-  );
+  const stock = findValue(objects, [
+    "stock",
+    "stock_quantity",
+    "quantity_available",
+    "inventory",
+    "new_stock",
+    "new_quantity",
+    "quantity",
+    "available",
+    "product.stock",
+    "product.quantity",
+    "inventory.quantity",
+  ]);
 
-  const price = firstDefined(
-    product?.price,
-    product?.price_amount,
-    payload?.price
-  );
+  const price = findValue(objects, [
+    "price",
+    "price_amount",
+    "unit_price",
+    "product.price",
+    "variant.price",
+  ]);
 
-  const currency = firstDefined(
-    product?.currency,
-    payload?.currency,
-    ""
-  );
+  const currency = findValue(objects, [
+    "currency",
+    "currency_code",
+    "product.currency",
+  ]);
 
-  const productUrl = firstDefined(
-    product?.url,
-    product?.product_url,
-    product?.link,
-    payload?.product_url
-  );
+  const url = findValue(objects, [
+    "product_url",
+    "url",
+    "link",
+    "product.url",
+    "product.link",
+  ]);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setTitle("SIMBA SHOP | Stock Replenished")
-    .setDescription(
-      "**A product's stock has been updated!**"
-    )
+    .setDescription("**A product's stock has been updated!**")
     .addFields(
       {
         name: "Product",
-        value: safeText(productName),
+        value: safeText(name),
         inline: false,
       },
       {
@@ -405,52 +459,43 @@ function buildRestockEmbed(payload) {
         inline: true,
       }
     )
-    .setFooter({
-      text: "SIMBA SHOP | SellAuth",
-    })
+    .setFooter({ text: "SIMBA SHOP | SellAuth" })
     .setTimestamp();
 
-  if (
-    typeof productUrl === "string" &&
-    productUrl.startsWith("https://")
-  ) {
+  if (typeof url === "string" && url.startsWith("https://")) {
     embed.addFields({
       name: "Purchase",
-      value: "[Click here to purchase](" + productUrl + ")",
+      value: "[Click here to purchase](" + url + ")",
       inline: false,
     });
 
-    embed.setURL(productUrl);
+    embed.setURL(url);
   }
 
   return embed;
 }
 
-// ================================
-// SEND DISCORD MESSAGE
-// ================================
+// =====================================
+// DISCORD SENDING
+// =====================================
 
 async function sendToChannel(channelId, options) {
   if (!channelId) {
-    throw new Error("The destination channel ID is missing.");
+    throw new Error("Destination channel ID is missing.");
   }
 
   const channel = await client.channels.fetch(channelId);
 
   if (!channel || !channel.isTextBased() || !channel.send) {
-    throw new Error(
-      "The configured destination is not a valid text channel."
-    );
+    throw new Error("Destination is not a valid text channel.");
   }
 
-  // Always send Discord message options.
-  // Embeds must be inside the embeds array.
   return channel.send(options);
 }
 
-// ================================
-// TEST COMMANDS
-// ================================
+// =====================================
+// TESTS
+// =====================================
 
 async function sendSaleTest() {
   const payload = {
@@ -468,13 +513,10 @@ async function sendSaleTest() {
     },
   };
 
-  await sendToChannel(
-    process.env.SALES_CHANNEL_ID,
-    {
-      embeds: [buildSaleEmbed(payload)],
-      allowedMentions: { parse: [] },
-    }
-  );
+  await sendToChannel(process.env.SALES_CHANNEL_ID, {
+    embeds: [buildSaleEmbed(payload)],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function sendStockTest() {
@@ -483,24 +525,22 @@ async function sendStockTest() {
       name: "SIMBA SHOP Test Restock",
       variant_name: "Default",
       stock: 24,
-      price: "Test",
+      price: 5,
+      currency: "USD",
       product_url: "https://simbashop.myshoppex.io/",
     },
   };
 
-  await sendToChannel(
-    process.env.RESTOCK_CHANNEL_ID,
-    {
-      content: "@everyone",
-      embeds: [buildRestockEmbed(payload)],
-      allowedMentions: { parse: ["everyone"] },
-    }
-  );
+  await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
+    content: "@everyone",
+    embeds: [buildRestockEmbed(payload)],
+    allowedMentions: { parse: ["everyone"] },
+  });
 }
 
-// ================================
+// =====================================
 // SELLAUTH WEBHOOK
-// ================================
+// =====================================
 
 app.post("/webhooks/sellauth", async (req, res) => {
   const expectedToken = process.env.SELLAUTH_WEBHOOK_TOKEN;
@@ -541,9 +581,15 @@ app.post("/webhooks/sellauth", async (req, res) => {
 
   console.log("SellAuth event received:", event || "(no event name)");
 
-  if (deliveryId && processedDeliveries.has(deliveryId)) {
-    console.log("Duplicate delivery ignored:", deliveryId);
+  // TEMPORARY DEBUG LOG:
+  // Check Railway logs to see the real field names.
+  // Remove this log after troubleshooting if payloads contain personal data.
+  console.log(
+    "SELLAUTH PAYLOAD:",
+    JSON.stringify(payload, null, 2)
+  );
 
+  if (deliveryId && processedDeliveries.has(deliveryId)) {
     return res.status(200).json({
       ok: true,
       duplicate: true,
@@ -551,13 +597,13 @@ app.post("/webhooks/sellauth", async (req, res) => {
   }
 
   try {
-    const isStockEvent =
+    const stockEvent =
       event.includes("stock") ||
       event.includes("restock") ||
       event.includes("inventory");
 
-    const isSaleEvent =
-      !isStockEvent &&
+    const saleEvent =
+      !stockEvent &&
       (
         event.includes("sale") ||
         event.includes("order") ||
@@ -567,22 +613,16 @@ app.post("/webhooks/sellauth", async (req, res) => {
         event.includes("complete")
       );
 
-    if (isStockEvent) {
-      await sendToChannel(
-        process.env.RESTOCK_CHANNEL_ID,
-        {
-          content: "@everyone",
-          embeds: [buildRestockEmbed(payload)],
-          allowedMentions: {
-            parse: ["everyone"],
-          },
-        }
-      );
+    if (stockEvent) {
+      await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
+        content: "@everyone",
+        embeds: [buildRestockEmbed(payload)],
+        allowedMentions: { parse: ["everyone"] },
+      });
 
       console.log("Restock embed sent successfully.");
-    } else if (isSaleEvent) {
+    } else if (saleEvent) {
       const order = getOrder(payload);
-
       const orderId = firstDefined(
         order?.id,
         order?.order_id,
@@ -591,8 +631,6 @@ app.post("/webhooks/sellauth", async (req, res) => {
       );
 
       if (orderId && processedOrders.has(String(orderId))) {
-        console.log("Duplicate order ignored:", orderId);
-
         if (deliveryId) remember(processedDeliveries, deliveryId);
 
         return res.status(200).json({
@@ -601,31 +639,22 @@ app.post("/webhooks/sellauth", async (req, res) => {
         });
       }
 
-      await sendToChannel(
-        process.env.SALES_CHANNEL_ID,
-        {
-          embeds: [buildSaleEmbed(payload)],
-          allowedMentions: {
-            parse: [],
-          },
-        }
-      );
+      await sendToChannel(process.env.SALES_CHANNEL_ID, {
+        embeds: [buildSaleEmbed(payload)],
+        allowedMentions: { parse: [] },
+      });
 
-      if (orderId) {
-        remember(processedOrders, String(orderId));
-      }
+      if (orderId) remember(processedOrders, String(orderId));
 
       console.log("Sale embed sent successfully.");
     } else {
       console.log(
-        "Unrecognized SellAuth event. Payload keys:",
-        Object.keys(payload)
+        "Unrecognized SellAuth event:",
+        event || "(no event name)"
       );
     }
 
-    if (deliveryId) {
-      remember(processedDeliveries, deliveryId);
-    }
+    if (deliveryId) remember(processedDeliveries, deliveryId);
 
     return res.status(200).json({
       ok: true,
@@ -641,17 +670,17 @@ app.post("/webhooks/sellauth", async (req, res) => {
   }
 });
 
-// ================================
+// =====================================
 // HEALTH CHECK
-// ================================
+// =====================================
 
 app.get("/", (req, res) => {
   res.status(200).send("SIMBA SHOP bot is running.");
 });
 
-// ================================
-// DISCORD INTERACTIONS
-// ================================
+// =====================================
+// INTERACTIONS
+// =====================================
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
@@ -698,9 +727,7 @@ client.on("interactionCreate", async (interaction) => {
 
       await sendSaleTest();
 
-      return interaction.editReply(
-        "Sales embed sent successfully."
-      );
+      return interaction.editReply("Sales embed sent successfully.");
     }
 
     if (interaction.commandName === "teststock") {
@@ -710,15 +737,12 @@ client.on("interactionCreate", async (interaction) => {
 
       await sendStockTest();
 
-      return interaction.editReply(
-        "Restock embed sent successfully."
-      );
+      return interaction.editReply("Restock embed sent successfully.");
     }
   } catch (error) {
     console.error("Interaction error:", error);
 
-    const message =
-      "An error occurred. Check the Railway logs.";
+    const message = "An error occurred. Check the Railway logs.";
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
@@ -731,9 +755,9 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ================================
-// START BOT
-// ================================
+// =====================================
+// START
+// =====================================
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log("HTTP server listening on port " + PORT);
