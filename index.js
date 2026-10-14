@@ -633,7 +633,7 @@ client.on("interactionCreate", async (interaction) => {
       });
 
       return interaction.reply({
-        content: `Message sent to ${channel}.`,
+       content: "Message sent to " + channel + ".",
         ephemeral: true,
       });
     }
