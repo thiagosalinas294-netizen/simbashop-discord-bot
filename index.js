@@ -234,7 +234,7 @@ function buildSaleEmbed(payload) {
   const embed = new EmbedBuilder()
     .setColor("#D4AF37")
     .setTitle("🦁 SIMBA SHOP • New Order")
-    .setDescription(`🛒 **New Sale • ${safeText(product)}**`)
+   .setDescription("🛒 **New Sale • " + safeText(product) + "**")
     .addFields(
       {
         name: "🔐 Product",
