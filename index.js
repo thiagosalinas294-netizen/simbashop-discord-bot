@@ -661,7 +661,7 @@ client.on("interactionCreate", async (interaction) => {
       error
     );
 
-    const message = `❌ Error: ${error.message}`.slice(0, 1900);
+  const message = "Error: " + String(error.message).slice(0, 1900);
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
