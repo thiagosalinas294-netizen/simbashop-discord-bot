@@ -363,7 +363,7 @@ function buildRestockEmbed(payload) {
   ) {
     embed.addFields({
       name: "🛒 Buy Now",
-      value: `[Click here to purchase](${productUrl})`,
+value: "[Click here to purchase](" + productUrl + ")",
       inline: false,
     });
 
