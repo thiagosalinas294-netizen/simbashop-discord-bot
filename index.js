@@ -657,7 +657,7 @@ client.on("interactionCreate", async (interaction) => {
     }
   } catch (error) {
     console.error(
-      `Command ${interaction.commandName} failed:`,
+      "Command " + interaction.commandName + " failed:",
       error
     );
 
