@@ -42,7 +42,10 @@ app.use(express.json({ limit: "1mb" }));
 
 function firstDefined(...values) {
   return values.find(
-    (v) => v !== undefined && v !== null && v !== ""
+    (value) =>
+      value !== undefined &&
+      value !== null &&
+      value !== ""
   );
 }
 
@@ -64,8 +67,10 @@ function formatMoney(value, currency = "EUR") {
     return "Not available";
   }
 
-  const n = Number(value);
-  const formatted = Number.isFinite(n) ? n.toFixed(2) : String(value);
+  const number = Number(value);
+  const formatted = Number.isFinite(number)
+    ? number.toFixed(2)
+    : String(value);
 
   return currency ? `${formatted} ${currency}` : formatted;
 }
@@ -84,12 +89,39 @@ function pickPath(object, paths) {
   for (const path of paths) {
     const value = getPath(object, path);
 
-    if (value !== undefined && value !== null && value !== "") {
+    if (
+      value !== undefined &&
+      value !== null &&
+      value !== ""
+    ) {
       return value;
     }
   }
 
   return undefined;
+}
+
+function isHttpUrl(value) {
+  return (
+    typeof value === "string" &&
+    /^https?:\/\/\S+$/i.test(value)
+  );
+}
+
+function normalizeUrl(candidate) {
+  if (candidate && typeof candidate === "object") {
+    candidate = firstDefined(
+      candidate.url,
+      candidate.src,
+      candidate.href,
+      candidate.original,
+      candidate.original_url,
+      candidate.originalUrl,
+      candidate.permalink
+    );
+  }
+
+  return isHttpUrl(candidate) ? candidate : null;
 }
 
 function getProductId(payload) {
@@ -125,18 +157,25 @@ function getProductName(payload, product) {
   return firstDefined(
     pickPath(payload, [
       "data.product.name",
+      "data.product.title",
       "data.product_name",
       "data.productName",
       "data.name",
       "product.name",
+      "product.title",
       "product_name",
       "productName",
     ]),
     product?.name,
     product?.title,
+    product?.product_name,
     "Digital product"
   );
 }
+
+// --------------------------------------------------
+// PRODUCT IMAGE AND BUY URL
+// --------------------------------------------------
 
 function getProductImage(payload, product, variant) {
   const paths = [
@@ -149,6 +188,9 @@ function getProductImage(payload, product, variant) {
     "cover_url",
     "coverUrl",
     "cover",
+    "icon",
+    "product_image",
+    "productImage",
     "images.0.url",
     "images.0",
     "media.0.url",
@@ -170,22 +212,52 @@ function getProductImage(payload, product, variant) {
     ]),
   ];
 
-  for (let candidate of candidates) {
-    if (candidate && typeof candidate === "object") {
-      candidate = firstDefined(
-        candidate.url,
-        candidate.src,
-        candidate.original,
-        candidate.original_url
-      );
-    }
+  for (const candidate of candidates) {
+    const url = normalizeUrl(candidate);
+    if (url) return url;
+  }
 
-    if (
-      typeof candidate === "string" &&
-      /^https?:\/\/\S+$/i.test(candidate)
-    ) {
-      return candidate;
-    }
+  return null;
+}
+
+function getProductUrl(payload, product, variant) {
+  const paths = [
+    "url",
+    "product_url",
+    "productUrl",
+    "permalink",
+    "checkout_url",
+    "checkoutUrl",
+    "purchase_url",
+    "purchaseUrl",
+    "storefront_url",
+    "storefrontUrl",
+    "public_url",
+    "publicUrl",
+    "links.product",
+    "links.storefront",
+    "links.checkout",
+  ];
+
+  const candidates = [
+    pickPath(variant, paths),
+    pickPath(product, paths),
+    pickPath(payload, [
+      "data.product.url",
+      "data.product.product_url",
+      "data.product.productUrl",
+      "data.product.permalink",
+      "data.product.checkout_url",
+      "data.product.storefront_url",
+      "data.url",
+      "data.product_url",
+      "data.productUrl",
+    ]),
+  ];
+
+  for (const candidate of candidates) {
+    const url = normalizeUrl(candidate);
+    if (url) return url;
   }
 
   return null;
@@ -209,6 +281,7 @@ function getVariants(product) {
 
 function findMatchingVariant(payload, product) {
   const variants = getVariants(product);
+
   if (!variants.length) return null;
 
   const ids = getVariantIds(payload);
@@ -233,32 +306,49 @@ function findProductInResponse(response, productId) {
   if (!response) return null;
 
   if (Array.isArray(response)) {
-    return response.find(
-      (item) =>
-        String(
-          firstDefined(item.id, item.product_id, item.productId, "")
-        ) === String(productId)
-    ) || null;
+    return (
+      response.find(
+        (item) =>
+          String(
+            firstDefined(
+              item?.id,
+              item?.product_id,
+              item?.productId,
+              ""
+            )
+          ) === String(productId)
+      ) || null
+    );
   }
 
   if (typeof response !== "object") return null;
 
+  const responseId = firstDefined(
+    response.id,
+    response.product_id,
+    response.productId
+  );
+
   if (
-    String(
-      firstDefined(
-        response.id,
-        response.product_id,
-        response.productId,
-        ""
-      )
-    ) === String(productId)
+    responseId !== undefined &&
+    String(responseId) === String(productId)
   ) {
     return response;
   }
 
-  for (const key of ["data", "product", "products", "results", "items"]) {
-    if (response[key]) {
-      const result = findProductInResponse(response[key], productId);
+  for (const key of [
+    "data",
+    "product",
+    "products",
+    "results",
+    "items",
+  ]) {
+    if (response[key] !== undefined) {
+      const result = findProductInResponse(
+        response[key],
+        productId
+      );
+
       if (result) return result;
     }
   }
@@ -273,7 +363,9 @@ function findProductInResponse(response, productId) {
 function sellAuthRequest(path) {
   return new Promise((resolve, reject) => {
     if (!SELLAUTH_API_KEY) {
-      return reject(new Error("SELLAUTH_API_KEY is missing"));
+      return reject(
+        new Error("SELLAUTH_API_KEY is missing")
+      );
     }
 
     const request = https.request(
@@ -291,13 +383,19 @@ function sellAuthRequest(path) {
         let body = "";
 
         response.setEncoding("utf8");
-        response.on("data", (chunk) => (body += chunk));
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
 
         response.on("end", () => {
-          if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
             return reject(
               new Error(
-                `SellAuth API HTTP ${response.statusCode}: ${body.slice(0, 250)}`
+                `SellAuth API HTTP ${response.statusCode}: ` +
+                body.slice(0, 250)
               )
             );
           }
@@ -311,9 +409,12 @@ function sellAuthRequest(path) {
       }
     );
 
-    request.on("timeout", () =>
-      request.destroy(new Error("SellAuth API timed out"))
-    );
+    request.on("timeout", () => {
+      request.destroy(
+        new Error("SellAuth API timed out")
+      );
+    });
+
     request.on("error", reject);
     request.end();
   });
@@ -322,10 +423,57 @@ function sellAuthRequest(path) {
 async function getSellAuthProduct(productId) {
   if (!productId) return null;
 
-  const path =
+  const base =
     `/v1/shops/${encodeURIComponent(SELLAUTH_SHOP_ID)}/products`;
 
-  const response = await sellAuthRequest(path);
+  // Try the individual product endpoint first.
+  try {
+    const response = await sellAuthRequest(
+      `${base}/${encodeURIComponent(productId)}`
+    );
+
+    const found = findProductInResponse(
+      response,
+      productId
+    );
+
+    if (found) return found;
+
+    if (response && typeof response === "object") {
+      const candidate =
+        response.data?.product ||
+        response.product ||
+        response.data;
+
+      if (
+        candidate &&
+        typeof candidate === "object" &&
+        !Array.isArray(candidate)
+      ) {
+        const candidateId = firstDefined(
+          candidate.id,
+          candidate.product_id,
+          candidate.productId
+        );
+
+        if (
+          candidateId === undefined ||
+          String(candidateId) === String(productId)
+        ) {
+          return candidate;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(
+      "Individual product lookup failed:",
+      error.message
+    );
+  }
+
+  // Fall back to the shop product list.
+  const response = await sellAuthRequest(base);
+
   return findProductInResponse(response, productId);
 }
 
@@ -338,6 +486,7 @@ function buildSaleEmbed(payload) {
 
   const productName = firstDefined(
     data?.product?.name,
+    data?.product?.title,
     data?.product_name,
     data?.productName,
     data?.name,
@@ -394,7 +543,9 @@ function buildSaleEmbed(payload) {
     )
     .setURL(STORE_URL)
     .setTimestamp()
-    .setFooter({ text: "🦁 SIMBA SHOP • SellAuth" });
+    .setFooter({
+      text: "🦁 SIMBA SHOP • SellAuth",
+    });
 
   if (orderId !== undefined) {
     embed.addFields({
@@ -416,13 +567,12 @@ function buildSaleEmbed(payload) {
 }
 
 // --------------------------------------------------
-// RESTOCK EMBED WITH PRODUCT IMAGE
+// RESTOCK EMBED
 // --------------------------------------------------
 
 function buildRestockEmbed(payload, product = null) {
   const productId = getProductId(payload);
   const variant = findMatchingVariant(payload, product);
-
   const productName = getProductName(payload, product);
 
   const variantName = firstDefined(
@@ -477,12 +627,28 @@ function buildRestockEmbed(payload, product = null) {
     payload?.quantity
   );
 
-  const imageUrl = getProductImage(payload, product, variant);
+  const imageUrl = getProductImage(
+    payload,
+    product,
+    variant
+  );
+
+  const productUrl = getProductUrl(
+    payload,
+    product,
+    variant
+  );
+
+  const description = productUrl
+    ? `**${String(productName).slice(0, 250)}**\n\n` +
+      `[🛒 Buy this product](${productUrl})`
+    : `**${String(productName).slice(0, 250)}**\n\n` +
+      `[🛍️ Visit SIMBA SHOP](${STORE_URL})`;
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setTitle("📦 SIMBA SHOP • Restock")
-    .setDescription("A product has been restocked!")
+    .setDescription(description)
     .addFields(
       {
         name: "Product",
@@ -496,13 +662,16 @@ function buildRestockEmbed(payload, product = null) {
       },
       {
         name: "Current Stock",
-        value: stock !== undefined ? String(stock) : "Not available",
+        value: stock !== undefined
+          ? String(stock)
+          : "Not available",
         inline: true,
       }
     )
-    .setURL(STORE_URL)
     .setTimestamp()
-    .setFooter({ text: "🦁 SIMBA SHOP • SellAuth" });
+    .setFooter({
+      text: "🦁 SIMBA SHOP • SellAuth",
+    });
 
   if (variantName) {
     embed.addFields({
@@ -522,9 +691,27 @@ function buildRestockEmbed(payload, product = null) {
 
   if (imageUrl) {
     embed.setThumbnail(imageUrl);
-    console.log("Restock image URL found for product:", productId);
+    console.log(
+      "Restock image URL found for product:",
+      productId
+    );
   } else {
-    console.warn("No product image URL found for product:", productId);
+    console.warn(
+      "No product image URL found for product:",
+      productId
+    );
+  }
+
+  if (productUrl) {
+    console.log(
+      "Restock product URL found for product:",
+      productId
+    );
+  } else {
+    console.warn(
+      "No product URL found in SellAuth data:",
+      productId
+    );
   }
 
   return embed;
@@ -581,10 +768,14 @@ const commands = [
 
 async function registerCommands() {
   if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    throw new Error("Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID");
+    throw new Error(
+      "Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID"
+    );
   }
 
-  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+  const rest = new REST({ version: "10" }).setToken(
+    DISCORD_TOKEN
+  );
 
   await rest.put(
     Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
@@ -599,7 +790,9 @@ async function registerCommands() {
 // --------------------------------------------------
 
 client.once("clientReady", () => {
-  console.log(`SIMBA SHOP online as ${client.user.tag}`);
+  console.log(
+    `SIMBA SHOP online as ${client.user.tag}`
+  );
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -618,7 +811,10 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const channel = interaction.options.getChannel("canal");
-      const message = interaction.options.getString("mensaje", true);
+      const message = interaction.options.getString(
+        "mensaje",
+        true
+      );
 
       if (!channel || !channel.isTextBased() || !channel.send) {
         return interaction.reply({
@@ -643,17 +839,35 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle("🦁 SIMBA SHOP • New Order")
         .setDescription("This is a test sale notification.")
         .addFields(
-          { name: "Product", value: "Test product", inline: true },
-          { name: "Amount", value: "1.00 EUR", inline: true },
-          { name: "Order ID", value: "TEST-001", inline: true }
+          {
+            name: "Product",
+            value: "Test product",
+            inline: true,
+          },
+          {
+            name: "Amount",
+            value: "1.00 EUR",
+            inline: true,
+          },
+          {
+            name: "Order ID",
+            value: "TEST-001",
+            inline: true,
+          }
         )
         .setURL(STORE_URL)
         .setTimestamp()
-        .setFooter({ text: "🦁 SIMBA SHOP • SellAuth" });
+        .setFooter({
+          text: "🦁 SIMBA SHOP • SellAuth",
+        });
 
-      await sendToChannel(SALES_CHANNEL_ID, { embeds: [embed] });
+      await sendToChannel(SALES_CHANNEL_ID, {
+        embeds: [embed],
+      });
 
-      return interaction.editReply("Test sale notification sent.");
+      return interaction.editReply(
+        "Test sale notification sent."
+      );
     }
 
     if (interaction.commandName === "teststock") {
@@ -672,11 +886,28 @@ client.on("interactionCreate", async (interaction) => {
         },
       };
 
-      const embed = buildRestockEmbed(payload);
+      let product = null;
 
-      await sendToChannel(RESTOCK_CHANNEL_ID, { embeds: [embed] });
+      if (SELLAUTH_API_KEY) {
+        try {
+          product = await getSellAuthProduct(913357);
+        } catch (error) {
+          console.error(
+            "Test product lookup failed:",
+            error.message
+          );
+        }
+      }
 
-      return interaction.editReply("Test restock notification sent.");
+      const embed = buildRestockEmbed(payload, product);
+
+      await sendToChannel(RESTOCK_CHANNEL_ID, {
+        embeds: [embed],
+      });
+
+      return interaction.editReply(
+        "Test restock notification sent."
+      );
     }
   } catch (error) {
     console.error("Command error:", error);
@@ -703,18 +934,29 @@ app.post("/webhooks/sellauth", (req, res) => {
     SELLAUTH_WEBHOOK_TOKEN &&
     req.query.token !== SELLAUTH_WEBHOOK_TOKEN
   ) {
-    return res.status(401).json({ error: "Unauthorized" });
+    return res.status(401).json({
+      error: "Unauthorized",
+    });
   }
 
   const payload = req.body || {};
+
   const event = String(
-    firstDefined(payload.event, payload.type, payload.name, "")
+    firstDefined(
+      payload.event,
+      payload.type,
+      payload.name,
+      ""
+    )
   ).toLowerCase();
 
   console.log("SellAuth webhook received:", event);
-  console.log("SellAuth webhook keys:", Object.keys(payload));
+  console.log(
+    "SellAuth webhook keys:",
+    Object.keys(payload)
+  );
 
-  // Acknowledge SellAuth immediately.
+  // Respond immediately so SellAuth does not wait.
   res.status(200).json({ received: true });
 
   void processWebhook(event, payload);
@@ -723,7 +965,8 @@ app.post("/webhooks/sellauth", (req, res) => {
 async function processWebhook(event, payload) {
   try {
     const isRestock =
-      event.includes("restock") || event.includes("stock");
+      event.includes("restock") ||
+      event.includes("stock");
 
     const isSale =
       event.includes("sale") ||
@@ -733,13 +976,36 @@ async function processWebhook(event, payload) {
 
     if (isRestock) {
       const productId = getProductId(payload);
+      let product = null;
 
-      // Send immediately, then update the same message with API data.
-      const initialEmbed = buildRestockEmbed(payload, null);
-      const message = await sendToChannel(
-        RESTOCK_CHANNEL_ID,
-        { embeds: [initialEmbed] }
-      );
+      if (productId && SELLAUTH_API_KEY) {
+        try {
+          product = await getSellAuthProduct(productId);
+
+          if (product) {
+            console.log(
+              "SellAuth product data retrieved:",
+              productId
+            );
+          } else {
+            console.warn(
+              "Product not found in SellAuth API:",
+              productId
+            );
+          }
+        } catch (error) {
+          console.error(
+            "SellAuth product lookup failed:",
+            error.message
+          );
+        }
+      }
+
+      const embed = buildRestockEmbed(payload, product);
+
+      await sendToChannel(RESTOCK_CHANNEL_ID, {
+        embeds: [embed],
+      });
 
       console.log(
         "Restock notification sent:",
@@ -747,27 +1013,6 @@ async function processWebhook(event, payload) {
         "product:",
         productId
       );
-
-      if (productId && SELLAUTH_API_KEY) {
-        try {
-          const product = await getSellAuthProduct(productId);
-
-          if (product) {
-            const updatedEmbed = buildRestockEmbed(payload, product);
-
-            await message.edit({ embeds: [updatedEmbed] });
-
-            console.log(
-              "Restock notification updated with product data:",
-              productId
-            );
-          } else {
-            console.warn("Product not found in SellAuth API:", productId);
-          }
-        } catch (error) {
-          console.error("SellAuth product lookup failed:", error.message);
-        }
-      }
 
       return;
     }
@@ -777,11 +1022,18 @@ async function processWebhook(event, payload) {
         embeds: [buildSaleEmbed(payload)],
       });
 
-      console.log("Sale notification sent:", new Date().toISOString());
+      console.log(
+        "Sale notification sent:",
+        new Date().toISOString()
+      );
+
       return;
     }
 
-    console.log("SellAuth event ignored:", event || "(unknown)");
+    console.log(
+      "SellAuth event ignored:",
+      event || "(unknown)"
+    );
   } catch (error) {
     console.error("Webhook processing error:", error);
   }
@@ -792,7 +1044,9 @@ async function processWebhook(event, payload) {
 // --------------------------------------------------
 
 app.get("/", (_req, res) => {
-  res.status(200).send("SIMBA SHOP Discord bot is running.");
+  res.status(200).send(
+    "SIMBA SHOP Discord bot is running."
+  );
 });
 
 app.get("/health", (_req, res) => {
@@ -822,7 +1076,9 @@ async function startBot() {
 }
 
 if (!DISCORD_TOKEN) {
-  console.error("Missing DISCORD_TOKEN in Railway variables.");
+  console.error(
+    "Missing DISCORD_TOKEN in Railway variables."
+  );
 } else {
   startBot();
 }
