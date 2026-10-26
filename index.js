@@ -1,103 +1,46 @@
+
 require("dotenv").config();
 
 const express = require("express");
+const https = require("https");
 const crypto = require("crypto");
 const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
   SlashCommandBuilder,
-  ChannelType,
   REST,
   Routes,
-  MessageFlags,
+  PermissionFlagsBits,
 } = require("discord.js");
 
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
 const GOLD = 0xD4AF37;
-const STORE_URL = "https://simba-market.mysellauth.com/";
-
-app.use(express.json({ limit: "1mb" }));
+const SHOP_ID = process.env.SELLAUTH_SHOP_ID || "275335";
+const SHOP_URL = "https://simba-market.mysellauth.com/";
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const processedOrders = new Map();
-const processedDeliveries = new Map();
+app.use(express.json({ limit: "1mb" }));
 
-// =====================================
-// COMMANDS
-// =====================================
+const processedOrders = new Set();
+const processedDeliveries = new Set();
 
-const sayCommand = new SlashCommandBuilder()
-  .setName("say")
-  .setDescription("Send a message through SIMBA SHOP")
-  .addChannelOption(option =>
-    option
-      .setName("canal")
-      .setDescription("Channel where the message will be sent")
-      .addChannelTypes(
-        ChannelType.GuildText,
-        ChannelType.GuildAnnouncement
-      )
-      .setRequired(true)
-  )
-  .addStringOption(option =>
-    option
-      .setName("mensaje")
-      .setDescription("Message to send")
-      .setMaxLength(2000)
-      .setRequired(true)
-  );
-
-const testVentaCommand = new SlashCommandBuilder()
-  .setName("testventa")
-  .setDescription("Test the sales notification");
-
-const testStockCommand = new SlashCommandBuilder()
-  .setName("teststock")
-  .setDescription("Test the restock notification");
-
-async function registerCommands() {
-  const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
-
-  if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.error("Missing Discord command environment variables.");
-    return;
+function remember(set, value, limit = 2000) {
+  set.add(String(value));
+  if (set.size > limit) {
+    const first = set.values().next().value;
+    set.delete(first);
   }
-
-  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-
-  await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    {
-      body: [
-        sayCommand,
-        testVentaCommand,
-        testStockCommand,
-      ].map(command => command.toJSON()),
-    }
-  );
-
-  console.log("Slash commands registered.");
 }
-
-// =====================================
-// HELPERS
-// =====================================
 
 function firstDefined(...values) {
-  return values.find(value =>
-    value !== undefined &&
-    value !== null &&
-    value !== ""
+  return values.find(
+    (value) => value !== undefined && value !== null && value !== ""
   );
-}
-
-function normalizeKey(key) {
-  return String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function safeText(value, fallback = "Not available") {
@@ -106,93 +49,87 @@ function safeText(value, fallback = "Not available") {
   }
 
   if (typeof value === "object") {
-    return String(firstDefined(
-      value.name,
-      value.title,
-      value.label,
-      value.id,
-      fallback
-    ));
+    return JSON.stringify(value).slice(0, 1000);
   }
 
   return String(value).slice(0, 1000);
 }
 
-function formatMoney(value, currency = "") {
+function formatMoney(value, currency) {
   if (value === undefined || value === null || value === "") {
     return "Not available";
   }
 
-  let amount = value;
-  let code = currency;
+  const amount =
+    typeof value === "object"
+      ? firstDefined(value.amount, value.value, value.price)
+      : value;
 
-  if (typeof value === "object") {
-    amount = firstDefined(value.amount, value.value, value.price);
-    code = firstDefined(
-      value.currency,
-      value.currency_code,
-      value.currencyCode,
-      value.code,
-      currency
-    );
-  }
-
-  if (amount === undefined || amount === null || typeof amount === "object") {
+  if (amount === undefined || amount === null) {
     return "Not available";
   }
 
-  return String(amount) + (code ? " " + String(code) : "");
+  return `${amount}${currency ? ` ${currency}` : ""}`;
 }
 
-function collectObjects(root) {
-  const result = [];
-  const seen = new Set();
+function getEventName(payload, req) {
+  return String(
+    firstDefined(
+      payload.event,
+      payload.type,
+      payload.event_type,
+      req.headers["x-sellauth-event"],
+      req.headers["x-webhook-event"],
+      ""
+    )
+  ).toLowerCase();
+}
 
-  function walk(value, depth = 0) {
-    if (
-      value === null ||
-      typeof value !== "object" ||
-      depth > 15 ||
-      seen.has(value)
-    ) {
-      return;
-    }
+function getDeliveryId(payload, req) {
+  return firstDefined(
+    req.headers["x-sellauth-delivery"],
+    req.headers["x-webhook-id"],
+    payload.delivery_id,
+    payload.idempotency_key
+  );
+}
 
-    seen.add(value);
+function collectObjects(value, result = [], depth = 0) {
+  if (!value || typeof value !== "object" || depth > 8) {
+    return result;
+  }
+
+  if (!result.includes(value)) {
     result.push(value);
+  }
 
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item, depth + 1);
-    } else {
-      for (const item of Object.values(value)) {
-        if (item && typeof item === "object") {
-          walk(item, depth + 1);
-        }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectObjects(item, result, depth + 1);
+    }
+  } else {
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object") {
+        collectObjects(child, result, depth + 1);
       }
     }
   }
 
-  walk(root);
   return result;
 }
 
-function findDeepValue(root, aliases) {
-  const objects = collectObjects(root);
-  const wanted = aliases.map(normalizeKey);
+function findDeepValue(source, keys) {
+  const wanted = new Set(keys.map((key) => key.toLowerCase()));
 
-  for (const alias of wanted) {
-    for (const object of objects) {
-      if (Array.isArray(object)) continue;
-
-      for (const [key, value] of Object.entries(object)) {
-        if (
-          normalizeKey(key) === alias &&
-          value !== undefined &&
-          value !== null &&
-          value !== ""
-        ) {
-          return value;
-        }
+  for (const obj of collectObjects(source)) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (
+        wanted.has(key.toLowerCase()) &&
+        value !== undefined &&
+        value !== null &&
+        value !== ""
+      ) {
+        return value;
       }
     }
   }
@@ -200,257 +137,265 @@ function findDeepValue(root, aliases) {
   return undefined;
 }
 
-function getOrder(payload) {
+function getProductId(payload) {
   return firstDefined(
-    payload?.data?.order,
-    payload?.order,
-    payload?.data,
-    payload
+    findDeepValue(payload, ["product_id", "productId"]),
+    payload?.data?.product?.id,
+    payload?.product?.id
   );
-}
-
-function getProduct(payload) {
-  return firstDefined(
-    payload?.data?.product,
-    payload?.product,
-    payload?.data?.item,
-    payload?.item,
-    payload?.data?.variant?.product,
-    payload?.variant?.product,
-    payload?.data?.order?.items?.[0],
-    payload?.order?.items?.[0],
-    payload?.data?.order?.line_items?.[0],
-    payload?.order?.line_items?.[0],
-    payload?.data?.order?.products?.[0],
-    payload?.order?.products?.[0],
-    payload?.data,
-    payload
-  );
-}
-
-function getEventName(payload, req) {
-  const event = firstDefined(
-    req.headers["x-sellauth-event"],
-    req.headers["x-webhook-event"],
-    payload?.event,
-    payload?.type,
-    payload?.name,
-    ""
-  );
-
-  if (typeof event === "object") {
-    return String(event.name || event.type || "").toLowerCase();
-  }
-
-  return String(event).toLowerCase();
-}
-
-function getDeliveryId(payload, req) {
-  return String(firstDefined(
-    req.headers["x-sellauth-delivery"],
-    req.headers["x-webhook-id"],
-    payload?.delivery_id,
-    payload?.event_id,
-    ""
-  ));
-}
-
-function remember(map, id) {
-  if (!id) return;
-
-  map.set(String(id), Date.now());
-
-  if (map.size > 2000) {
-    map.delete(map.keys().next().value);
-  }
 }
 
 function findProductName(payload) {
-  const product = getProduct(payload);
-
   return firstDefined(
-    findDeepValue(product, [
-      "product_name",
-      "productName",
-      "item_name",
-      "itemName",
-      "product_title",
-      "productTitle",
-      "title",
-      "name",
-    ]),
     findDeepValue(payload, [
       "product_name",
       "productName",
-      "item_name",
-      "itemName",
+      "product_title",
+      "productTitle",
+      "name",
+      "title",
     ])
   );
 }
 
 function findProductUrl(payload) {
-  const value = findDeepValue(getProduct(payload), [
-    "product_url",
-    "productUrl",
-    "purchase_url",
-    "purchaseUrl",
-    "product_link",
-    "productLink",
-    "url",
-    "link",
-  ]);
+  const value = firstDefined(
+    findDeepValue(payload, [
+      "product_url",
+      "productUrl",
+      "product_link",
+      "productLink",
+      "checkout_url",
+      "checkoutUrl",
+      "url",
+    ]),
+    SHOP_URL
+  );
 
-  if (typeof value === "string" && /^https?:\/\//i.test(value)) {
-    return value;
-  }
+  const url = String(value);
 
-  return STORE_URL;
+  return /^https:\/\/[^\s]+$/i.test(url) ? url : SHOP_URL;
 }
 
 function findImage(payload) {
-  const image = findDeepValue(getProduct(payload), [
+  const value = findDeepValue(payload, [
     "image_url",
     "imageUrl",
-    "thumbnail_url",
-    "thumbnailUrl",
-    "image",
     "thumbnail",
+    "image",
   ]);
 
-  const url = typeof image === "string" ? image : image?.url;
+  if (typeof value !== "string") return undefined;
 
-  return typeof url === "string" && /^https?:\/\//i.test(url)
-    ? url
-    : null;
+  return /^https:\/\/[^\s]+$/i.test(value)
+    ? value
+    : undefined;
 }
 
-// =====================================
-// SALE EMBED
-// =====================================
+/*
+ * SellAuth product API.
+ * The API documentation shows GET with a JSON request body.
+ * https.request permits sending that body with GET.
+ */
+function sellAuthRequest(path, body) {
+  return new Promise((resolve, reject) => {
+    const apiKey = process.env.SELLAUTH_API_KEY;
 
-function buildSaleEmbed(payload) {
-  const order = getOrder(payload);
-  const product = getProduct(payload);
+    if (!apiKey) {
+      return reject(new Error("SELLAUTH_API_KEY is missing."));
+    }
+
+    const data = body ? JSON.stringify(body) : "";
+
+    const request = https.request(
+      {
+        hostname: "api.sellauth.com",
+        path,
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(data ? { "Content-Length": Buffer.byteLength(data) } : {}),
+        },
+        timeout: 15000,
+      },
+      (response) => {
+        let responseBody = "";
+
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          responseBody += chunk;
+        });
+
+        response.on("end", () => {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
+            return reject(
+              new Error(
+                `SellAuth API returned HTTP ${response.statusCode}: ` +
+                  responseBody.slice(0, 500)
+              )
+            );
+          }
+
+          try {
+            resolve(
+              responseBody ? JSON.parse(responseBody) : {}
+            );
+          } catch {
+            reject(
+              new Error("SellAuth API returned invalid JSON.")
+            );
+          }
+        });
+      }
+    );
+
+    request.on("timeout", () => {
+      request.destroy(new Error("SellAuth API request timed out."));
+    });
+
+    request.on("error", reject);
+
+    if (data) request.write(data);
+
+    request.end();
+  });
+}
+
+function normalizeProducts(result) {
+  if (Array.isArray(result)) return result;
+
+  if (Array.isArray(result?.products)) return result.products;
+  if (Array.isArray(result?.data)) return result.data;
+  if (Array.isArray(result?.items)) return result.items;
+  if (Array.isArray(result?.data?.products)) {
+    return result.data.products;
+  }
+
+  return [];
+}
+
+async function getSellAuthProduct(productId) {
+  if (!productId) return null;
+
+  const result = await sellAuthRequest(
+    `/v1/shops/${encodeURIComponent(SHOP_ID)}/products`,
+    {
+      page: 1,
+      perPage: 100,
+      ids: [Number(productId)],
+      orderColumn: null,
+      orderDirection: null,
+      type: null,
+      paths: null,
+      name: null,
+      variant_name: null,
+      sku: null,
+      visibilities: null,
+      group_ids: null,
+      group_null: null,
+      badge_text: null,
+      status_text: null,
+      deliverable: null,
+      deliverables_type: null,
+      all: null,
+    }
+  );
+
+  const products = normalizeProducts(result);
+
+  const product = products.find(
+    (item) => Number(item.id) === Number(productId)
+  );
+
+  if (!product) {
+    console.log(
+      `SellAuth API did not return product ID ${productId}.`
+    );
+    return null;
+  }
+
+  return product;
+}
+
+function getApiProductStock(product) {
+  if (!product) return undefined;
+
+  const directStock = firstDefined(
+    product.stock,
+    product.current_stock,
+    product.currentStock,
+    product.stock_quantity,
+    product.stockQuantity,
+    product.quantity_available,
+    product.quantityAvailable,
+    product.inventory_quantity,
+    product.inventoryQuantity
+  );
+
+  if (directStock !== undefined) return directStock;
+
+  const variants = Array.isArray(product.variants)
+    ? product.variants
+    : [];
+
+  if (variants.length === 1) {
+    const variant = variants[0];
+
+    return firstDefined(
+      variant.stock,
+      variant.current_stock,
+      variant.currentStock,
+      variant.stock_quantity,
+      variant.stockQuantity,
+      variant.quantity_available,
+      variant.quantityAvailable,
+      variant.inventory_quantity,
+      variant.inventoryQuantity
+    );
+  }
+
+  return undefined;
+}
+
+function buildRestockEmbed(payload, apiProduct = null) {
+  const webhookName = findProductName(payload);
 
   const name = firstDefined(
-    findProductName(payload),
-    findDeepValue(order, ["product_name", "productName"]),
-    "Not available"
+    apiProduct?.name,
+    apiProduct?.title,
+    apiProduct?.product_name,
+    webhookName
   );
 
-  const orderId = findDeepValue(order, [
-    "order_id",
-    "orderId",
-    "id",
-    "uuid",
+  const webhookVariant = findDeepValue(payload, [
+    "variant_name",
+    "variantName",
+    "variant_title",
+    "variantTitle",
   ]);
 
-  const total = firstDefined(
-    findDeepValue(order, [
-      "total",
-      "total_price",
-      "totalPrice",
-      "amount",
-      "subtotal",
-    ]),
-    findDeepValue(payload, ["total", "total_price", "totalPrice"])
-  );
-
-  const currency = firstDefined(
-    findDeepValue(order, ["currency", "currency_code", "currencyCode"]),
-    findDeepValue(payload, ["currency", "currency_code"])
-  );
-
-  const quantity = firstDefined(
-    findDeepValue(product, ["quantity", "qty", "amount_ordered"]),
-    findDeepValue(order, ["quantity", "qty"]),
-    1
-  );
-
-  const payment = findDeepValue(payload, [
-    "payment_method",
-    "paymentMethod",
-    "gateway",
-  ]);
-
-  const coupon = findDeepValue(payload, [
-    "coupon_code",
-    "couponCode",
-  ]);
-
-  const embed = new EmbedBuilder()
-    .setColor(GOLD)
-    .setTitle("🦁 SIMBA SHOP | New Sale")
-    .setDescription("A new order has been received!")
-    .addFields(
-      { name: "Product", value: safeText(name), inline: false },
-      { name: "Quantity", value: safeText(quantity, "1"), inline: true },
-      { name: "Total", value: formatMoney(total, currency), inline: true },
-      { name: "Payment", value: safeText(payment), inline: true },
-      { name: "Coupon", value: safeText(coupon, "None"), inline: true },
-      { name: "Order ID", value: safeText(orderId), inline: true }
-    )
-    .setFooter({ text: "🦁 SIMBA SHOP • Powered by SellAuth" })
-    .setTimestamp()
-    .setURL(findProductUrl(payload));
-
-  const image = findImage(payload);
-  if (image) embed.setThumbnail(image);
-
-  return embed;
-}
-
-// =====================================
-// RESTOCK EMBED
-// =====================================
-
-function buildRestockEmbed(payload) {
-  const product = getProduct(payload);
-
-  const name = findProductName(payload);
+  const variants = Array.isArray(apiProduct?.variants)
+    ? apiProduct.variants
+    : [];
 
   const variant = firstDefined(
-    findDeepValue(product, [
-      "variant_name",
-      "variantName",
-      "variant_title",
-      "variantTitle",
-    ]),
-    findDeepValue(payload, [
-      "variant_name",
-      "variantName",
-      "variant_title",
-      "variantTitle",
-    ]),
+    webhookVariant,
+    variants.length === 1 ? variants[0].name : undefined,
+    variants.length === 1 ? variants[0].title : undefined,
     "Default"
   );
 
-  const stock = findDeepValue(payload, [
-    "current_stock",
-    "currentStock",
-    "stock_quantity",
-    "stockQuantity",
-    "quantity_available",
-    "quantityAvailable",
-    "new_stock",
-    "newStock",
-    "new_quantity",
-    "newQuantity",
-    "inventory_quantity",
-    "inventoryQuantity",
-    "stock",
-    "inventory",
-    "available",
-  ]);
-
   const price = firstDefined(
-    findDeepValue(product, [
-      "unit_price",
-      "unitPrice",
-      "price_amount",
-      "priceAmount",
-      "price",
-    ]),
+    apiProduct?.price,
+    apiProduct?.unit_price,
+    apiProduct?.unitPrice,
+    apiProduct?.price_amount,
+    apiProduct?.priceAmount,
     findDeepValue(payload, [
       "unit_price",
       "unitPrice",
@@ -461,11 +406,9 @@ function buildRestockEmbed(payload) {
   );
 
   const currency = firstDefined(
-    findDeepValue(product, [
-      "currency",
-      "currency_code",
-      "currencyCode",
-    ]),
+    apiProduct?.currency,
+    apiProduct?.currency_code,
+    apiProduct?.currencyCode,
     findDeepValue(payload, [
       "currency",
       "currency_code",
@@ -473,7 +416,40 @@ function buildRestockEmbed(payload) {
     ])
   );
 
-  const url = findProductUrl(payload);
+  const stock = firstDefined(
+    getApiProductStock(apiProduct),
+    findDeepValue(payload, [
+      "current_stock",
+      "currentStock",
+      "stock_quantity",
+      "stockQuantity",
+      "quantity_available",
+      "quantityAvailable",
+      "new_stock",
+      "newStock",
+      "new_quantity",
+      "newQuantity",
+      "inventory_quantity",
+      "inventoryQuantity",
+      "stock",
+      "inventory",
+      "available",
+    ])
+  );
+
+  const productUrl = firstDefined(
+    apiProduct?.url,
+    apiProduct?.product_url,
+    apiProduct?.productUrl,
+    findProductUrl(payload),
+    SHOP_URL
+  );
+
+  const url =
+    typeof productUrl === "string" &&
+    /^https:\/\/[^\s]+$/i.test(productUrl)
+      ? productUrl
+      : SHOP_URL;
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
@@ -502,85 +478,282 @@ function buildRestockEmbed(payload) {
       },
       {
         name: "Purchase",
-        value: "[Click here to purchase](" + url + ")",
+        value: `[Click here to purchase](${url})`,
         inline: false,
       }
     )
     .setURL(url)
-    .setFooter({ text: "🦁 SIMBA SHOP • Powered by SellAuth" })
+    .setFooter({
+      text: "🦁 SIMBA SHOP • Powered by SellAuth",
+    })
     .setTimestamp();
 
-  const image = findImage(payload);
-  if (image) embed.setThumbnail(image);
+  const image = firstDefined(
+    apiProduct?.image_url,
+    apiProduct?.imageUrl,
+    apiProduct?.image,
+    findImage(payload)
+  );
+
+  if (
+    typeof image === "string" &&
+    /^https:\/\/[^\s]+$/i.test(image)
+  ) {
+    embed.setThumbnail(image);
+  }
 
   return embed;
 }
 
-// =====================================
-// DISCORD SENDING
-// =====================================
+function getOrder(payload) {
+  return firstDefined(
+    payload?.data?.order,
+    payload?.order,
+    payload?.data,
+    payload
+  );
+}
 
-async function sendToChannel(channelId, options) {
+function buildSaleEmbed(payload) {
+  const order = getOrder(payload);
+  const productName = firstDefined(
+    findProductName(payload),
+    findDeepValue(order, ["name", "title"]),
+    "Digital product"
+  );
+
+  const orderId = firstDefined(
+    order?.id,
+    order?.order_id,
+    order?.uuid,
+    payload?.order_id,
+    "Not available"
+  );
+
+  const price = findDeepValue(order, [
+    "total",
+    "total_price",
+    "totalPrice",
+    "amount",
+    "price",
+  ]);
+
+  const currency = findDeepValue(order, [
+    "currency",
+    "currency_code",
+    "currencyCode",
+  ]);
+
+  return new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle("🦁 SIMBA SHOP | New Sale")
+    .setDescription("A new order has been received!")
+    .addFields(
+      {
+        name: "Product",
+        value: safeText(productName),
+        inline: false,
+      },
+      {
+        name: "Order ID",
+        value: safeText(orderId),
+        inline: true,
+      },
+      {
+        name: "Total",
+        value: formatMoney(price, currency),
+        inline: true,
+      },
+      {
+        name: "Store",
+        value: `[Open SIMBA SHOP](${SHOP_URL})`,
+        inline: false,
+      }
+    )
+    .setURL(SHOP_URL)
+    .setFooter({
+      text: "🦁 SIMBA SHOP • Powered by SellAuth",
+    })
+    .setTimestamp();
+}
+
+async function sendToChannel(channelId, message) {
   if (!channelId) {
-    throw new Error("Destination channel ID is missing.");
+    throw new Error("Channel ID is missing in Railway Variables.");
   }
 
   const channel = await client.channels.fetch(channelId);
 
-  if (!channel || !channel.isTextBased() || !channel.send) {
-    throw new Error("Destination is not a valid text channel.");
+  if (!channel || !channel.isTextBased()) {
+    throw new Error(`Channel ${channelId} is not a text channel.`);
   }
 
-  return channel.send(options);
+  return channel.send(message);
 }
 
-// =====================================
-// TEST COMMANDS
-// =====================================
-
-async function sendSaleTest() {
-  const payload = {
-    order: {
-      id: "TEST-001",
-      total: 5,
-      currency: "USD",
-      quantity: 1,
-      payment_method: "Test payment",
-      product: {
-        name: "SIMBA SHOP Test Product",
-        price: 5,
-      },
-    },
-  };
-
-  await sendToChannel(process.env.SALES_CHANNEL_ID, {
-    embeds: [buildSaleEmbed(payload)],
-    allowedMentions: { parse: [] },
-  });
+function makeTestSaleEmbed() {
+  return new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle("🦁 SIMBA SHOP | Test Sale")
+    .setDescription("This is a test sale notification.")
+    .addFields(
+      { name: "Product", value: "Test product", inline: true },
+      { name: "Total", value: "5 USD", inline: true },
+      { name: "Order ID", value: "TEST-ORDER", inline: true }
+    )
+    .setFooter({ text: "🦁 SIMBA SHOP • Test" })
+    .setTimestamp();
 }
 
-async function sendStockTest() {
-  const payload = {
-    product: {
-      name: "SIMBA SHOP Test Restock",
-      variant_name: "Default",
-      stock: 24,
-      price: 5,
-      currency: "USD",
-      product_url: STORE_URL,
-    },
-  };
-
-  await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
-    content: "@everyone",
-    embeds: [buildRestockEmbed(payload)],
-    allowedMentions: { parse: ["everyone"] },
-  });
+function makeTestStockEmbed() {
+  return new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle("🦁 SIMBA SHOP | Stock Replenished")
+    .setDescription("This is a test stock notification.")
+    .addFields(
+      { name: "Product", value: "Test product", inline: false },
+      { name: "Variant", value: "Default", inline: true },
+      { name: "Price", value: "5 USD", inline: true },
+      { name: "Current Stock", value: "24", inline: true },
+      {
+        name: "Purchase",
+        value: `[Click here to purchase](${SHOP_URL})`,
+        inline: false,
+      }
+    )
+    .setURL(SHOP_URL)
+    .setFooter({ text: "🦁 SIMBA SHOP • Test" })
+    .setTimestamp();
 }
 
-// =====================================
-// SELLAUTH WEBHOOK
-// =====================================
+const commands = [
+  new SlashCommandBuilder()
+    .setName("say")
+    .setDescription("Send a message to a selected channel.")
+    .addChannelOption((option) =>
+      option
+        .setName("canal")
+        .setDescription("The channel where the message will be sent.")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("mensaje")
+        .setDescription("The message to send.")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("testventa")
+    .setDescription("Send a test sale notification."),
+
+  new SlashCommandBuilder()
+    .setName("teststock")
+    .setDescription("Send a test stock notification."),
+].map((command) => command.toJSON());
+
+client.once("ready", async () => {
+  console.log(`Discord connected as ${client.user.tag}`);
+
+  try {
+    const rest = new REST({ version: "10" }).setToken(
+      process.env.DISCORD_TOKEN
+    );
+
+    await rest.put(
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID
+      ),
+      { body: commands }
+    );
+
+    console.log("Slash commands registered.");
+  } catch (error) {
+    console.error("Failed to register slash commands:", error.message);
+  }
+});
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  try {
+    if (interaction.commandName === "say") {
+      const allowedUserId = process.env.SAY_ALLOWED_USER_ID;
+
+      if (
+        allowedUserId &&
+        interaction.user.id !== allowedUserId
+      ) {
+        return interaction.reply({
+          content: "You are not allowed to use this command.",
+          ephemeral: true,
+        });
+      }
+
+      const channel = interaction.options.getChannel("canal");
+      const message = interaction.options.getString("mensaje");
+
+      if (!channel || !channel.isTextBased()) {
+        return interaction.reply({
+          content: "Please select a text channel.",
+          ephemeral: true,
+        });
+      }
+
+      await channel.send({ content: message });
+
+      return interaction.reply({
+        content: `Message sent to ${channel}.`,
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.commandName === "testventa") {
+      await interaction.deferReply({ ephemeral: true });
+
+      await sendToChannel(process.env.SALES_CHANNEL_ID, {
+        embeds: [makeTestSaleEmbed()],
+        allowedMentions: { parse: [] },
+      });
+
+      return interaction.editReply("Test sale notification sent.");
+    }
+
+    if (interaction.commandName === "teststock") {
+      await interaction.deferReply({ ephemeral: true });
+
+      await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
+        content: "@everyone",
+        embeds: [makeTestStockEmbed()],
+        allowedMentions: { parse: ["everyone"] },
+      });
+
+      return interaction.editReply("Test stock notification sent.");
+    }
+  } catch (error) {
+    console.error("Command error:", error);
+
+    const message = "The command failed. Check Railway logs.";
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(message).catch(() => {});
+    } else {
+      await interaction.reply({
+        content: message,
+        ephemeral: true,
+      }).catch(() => {});
+    }
+  }
+});
+
+app.get("/", (_req, res) => {
+  res.status(200).send("SIMBA SHOP Discord bot is online.");
+});
+
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true });
+});
 
 app.post("/webhooks/sellauth", async (req, res) => {
   const expectedToken = process.env.SELLAUTH_WEBHOOK_TOKEN;
@@ -625,18 +798,6 @@ app.post("/webhooks/sellauth", async (req, res) => {
     Object.keys(payload).join(", ")
   );
 
-  // Temporary diagnostic: logs data structure for mapping fields.
-  // Do not log full customer details or credentials.
-  console.log(
-    "SELLAUTH DATA:",
-    JSON.stringify(payload.data, (key, value) => {
-      if (/email|token|secret|password|api.?key/i.test(key)) {
-        return "[REDACTED]";
-      }
-      return value;
-    }, 2)
-  );
-
   if (deliveryId && processedDeliveries.has(deliveryId)) {
     return res.status(200).json({ ok: true, duplicate: true });
   }
@@ -659,29 +820,37 @@ app.post("/webhooks/sellauth", async (req, res) => {
       );
 
     if (stockEvent) {
-      console.log(
-        "Restock fields detected:",
-        JSON.stringify({
-          product: findProductName(payload) || null,
-          price: findDeepValue(payload, [
-            "price",
-            "unit_price",
-            "price_amount",
-          ]) ?? null,
-          stock: findDeepValue(payload, [
-            "current_stock",
-            "stock_quantity",
-            "quantity_available",
-            "new_stock",
-            "stock",
-            "inventory",
-          ]) ?? null,
-        })
-      );
+      const productId = getProductId(payload);
+      let apiProduct = null;
+
+      if (productId) {
+        try {
+          apiProduct = await getSellAuthProduct(productId);
+
+          console.log(
+            "SellAuth product lookup:",
+            JSON.stringify({
+              requestedProductId: productId,
+              found: Boolean(apiProduct),
+              returnedProductId: apiProduct?.id ?? null,
+              hasName: Boolean(apiProduct?.name || apiProduct?.title),
+              hasPrice: apiProduct?.price !== undefined,
+              hasStock: getApiProductStock(apiProduct) !== undefined,
+            })
+          );
+        } catch (error) {
+          console.error(
+            "SellAuth product lookup failed:",
+            error.message
+          );
+        }
+      } else {
+        console.log("Restock webhook did not include a product ID.");
+      }
 
       await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
         content: "@everyone",
-        embeds: [buildRestockEmbed(payload)],
+        embeds: [buildRestockEmbed(payload, apiProduct)],
         allowedMentions: { parse: ["everyone"] },
       });
 
@@ -697,7 +866,11 @@ app.post("/webhooks/sellauth", async (req, res) => {
 
       if (orderId && processedOrders.has(String(orderId))) {
         if (deliveryId) remember(processedDeliveries, deliveryId);
-        return res.status(200).json({ ok: true, duplicate: true });
+
+        return res.status(200).json({
+          ok: true,
+          duplicate: true,
+        });
       }
 
       await sendToChannel(process.env.SALES_CHANNEL_ID, {
@@ -728,102 +901,21 @@ app.post("/webhooks/sellauth", async (req, res) => {
   }
 });
 
-// =====================================
-// HEALTH CHECK
-// =====================================
-
-app.get("/", (req, res) => {
-  res.status(200).send("SIMBA SHOP bot is running.");
-});
-
-// =====================================
-// INTERACTIONS
-// =====================================
-
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  try {
-    if (interaction.commandName === "say") {
-      const allowedUserId = process.env.SAY_ALLOWED_USER_ID;
-
-      if (!allowedUserId || interaction.user.id !== allowedUserId) {
-        return interaction.reply({
-          content: "You are not allowed to use this command.",
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-
-      const channel = interaction.options.getChannel("canal");
-      const message = interaction.options.getString("mensaje");
-
-      if (!channel || !channel.isTextBased() || !channel.send) {
-        return interaction.reply({
-          content: "Please select a valid text channel.",
-          flags: MessageFlags.Ephemeral,
-        });
-      }
-
-      await channel.send({
-        content: message,
-        allowedMentions: { parse: [] },
-      });
-
-      return interaction.reply({
-        content: "Message sent to " + channel + ".",
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (interaction.commandName === "testventa") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await sendSaleTest();
-      return interaction.editReply("Sales embed sent successfully.");
-    }
-
-    if (interaction.commandName === "teststock") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await sendStockTest();
-      return interaction.editReply("Restock embed sent successfully.");
-    }
-  } catch (error) {
-    console.error("Interaction error:", error);
-
-    const message = "An error occurred. Check the Railway logs.";
-
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(message).catch(() => {});
-    } else {
-      await interaction.reply({
-        content: message,
-        flags: MessageFlags.Ephemeral,
-      }).catch(() => {});
-    }
-  }
-});
-
-// =====================================
-// START
-// =====================================
-
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("HTTP server listening on port " + PORT);
-});
-
-client.once("ready", async () => {
-  console.log("Discord connected as " + client.user.tag);
-
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error("Command registration error:", error);
-  }
+  console.log(`HTTP server listening on port ${PORT}`);
 });
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error("Missing DISCORD_TOKEN in Railway variables.");
-} else {
-  client.login(process.env.DISCORD_TOKEN).catch(error => {
-    console.error("Discord login error:", error);
-  });
+  console.error("Missing DISCORD_TOKEN.");
+  process.exit(1);
 }
+
+if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
+  console.error("Missing CLIENT_ID or GUILD_ID.");
+  process.exit(1);
+}
+
+client.login(process.env.DISCORD_TOKEN).catch((error) => {
+  console.error("Discord login failed:", error);
+  process.exit(1);
+});
