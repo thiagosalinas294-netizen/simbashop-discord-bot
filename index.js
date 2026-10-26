@@ -10,23 +10,23 @@ const {
   SlashCommandBuilder,
   REST,
   Routes,
-  PermissionFlagsBits,
 } = require("discord.js");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
-const SAY_ALLOWED_USER_ID = process.env.SAY_ALLOWED_USER_ID;
-const SALES_CHANNEL_ID = process.env.SALES_CHANNEL_ID;
-const RESTOCK_CHANNEL_ID = process.env.RESTOCK_CHANNEL_ID;
+const {
+  DISCORD_TOKEN,
+  CLIENT_ID,
+  GUILD_ID,
+  SAY_ALLOWED_USER_ID,
+  SALES_CHANNEL_ID,
+  RESTOCK_CHANNEL_ID,
+  SELLAUTH_API_KEY,
+  SELLAUTH_WEBHOOK_TOKEN,
+} = process.env;
 
-const SELLAUTH_API_KEY = process.env.SELLAUTH_API_KEY;
-const SELLAUTH_WEBHOOK_TOKEN = process.env.SELLAUTH_WEBHOOK_TOKEN;
 const SELLAUTH_SHOP_ID = process.env.SELLAUTH_SHOP_ID || "275335";
-
 const STORE_URL = "https://simba-market.mysellauth.com/";
 const GOLD = 0xd4af37;
 
@@ -37,19 +37,16 @@ const client = new Client({
 app.use(express.json({ limit: "1mb" }));
 
 // --------------------------------------------------
-// GENERAL HELPERS
+// HELPERS
 // --------------------------------------------------
 
 function firstDefined(...values) {
   return values.find(
-    (value) =>
-      value !== undefined &&
-      value !== null &&
-      value !== ""
+    (v) => v !== undefined && v !== null && v !== ""
   );
 }
 
-function formatMoney(value, currency) {
+function formatMoney(value, currency = "EUR") {
   if (value === undefined || value === null || value === "") {
     return "Not available";
   }
@@ -67,27 +64,25 @@ function formatMoney(value, currency) {
     return "Not available";
   }
 
-  const amount = Number(value);
-  const formatted = Number.isFinite(amount)
-    ? amount.toFixed(2)
-    : String(value);
+  const n = Number(value);
+  const formatted = Number.isFinite(n) ? n.toFixed(2) : String(value);
 
-  return currency
-    ? `${formatted} ${currency}`
-    : formatted;
+  return currency ? `${formatted} ${currency}` : formatted;
 }
 
-function getNestedValue(object, paths) {
+function getPath(object, path) {
+  return path.split(".").reduce(
+    (current, key) =>
+      current && current[key] !== undefined
+        ? current[key]
+        : undefined,
+    object
+  );
+}
+
+function pickPath(object, paths) {
   for (const path of paths) {
-    const value = path
-      .split(".")
-      .reduce(
-        (current, key) =>
-          current && current[key] !== undefined
-            ? current[key]
-            : undefined,
-        object
-      );
+    const value = getPath(object, path);
 
     if (value !== undefined && value !== null && value !== "") {
       return value;
@@ -97,106 +92,110 @@ function getNestedValue(object, paths) {
   return undefined;
 }
 
-function findProductObject(data, productId) {
-  if (!data) return null;
+function getProductId(payload) {
+  return firstDefined(
+    payload?.data?.product_id,
+    payload?.data?.productId,
+    payload?.data?.product?.id,
+    payload?.product_id,
+    payload?.productId,
+    payload?.product?.id
+  );
+}
 
-  if (Array.isArray(data)) {
-    return (
-      data.find(
-        (item) =>
-          String(
-            firstDefined(item.id, item.product_id, item.productId, "")
-          ) === String(productId)
-      ) || null
-    );
-  }
+function getVariantIds(payload) {
+  const data = payload?.data || {};
 
-  if (typeof data !== "object") return null;
+  const ids = [
+    ...(Array.isArray(data.restocked_variant_ids)
+      ? data.restocked_variant_ids
+      : []),
+    data.variant_id,
+    data.variantId,
+    data.variant?.id,
+    data.variant?.variant_id,
+  ];
 
-  if (
-    String(
-      firstDefined(data.id, data.product_id, data.productId, "")
-    ) === String(productId)
-  ) {
-    return data;
-  }
+  return ids
+    .filter((id) => id !== undefined && id !== null)
+    .map(String);
+}
 
-  for (const key of ["data", "product", "products", "results", "items"]) {
-    if (data[key]) {
-      const found = findProductObject(data[key], productId);
-      if (found) return found;
+function getProductName(payload, product) {
+  return firstDefined(
+    pickPath(payload, [
+      "data.product.name",
+      "data.product_name",
+      "data.productName",
+      "data.name",
+      "product.name",
+      "product_name",
+      "productName",
+    ]),
+    product?.name,
+    product?.title,
+    "Digital product"
+  );
+}
+
+function getProductImage(payload, product, variant) {
+  const paths = [
+    "image_url",
+    "imageUrl",
+    "image",
+    "thumbnail_url",
+    "thumbnailUrl",
+    "thumbnail",
+    "cover_url",
+    "coverUrl",
+    "cover",
+    "images.0.url",
+    "images.0",
+    "media.0.url",
+    "media.0",
+  ];
+
+  const candidates = [
+    pickPath(variant, paths),
+    pickPath(product, paths),
+    pickPath(payload, [
+      "data.image_url",
+      "data.imageUrl",
+      "data.image",
+      "data.product.image_url",
+      "data.product.imageUrl",
+      "data.product.image",
+      "data.product.thumbnail",
+      "data.product.cover",
+    ]),
+  ];
+
+  for (let candidate of candidates) {
+    if (candidate && typeof candidate === "object") {
+      candidate = firstDefined(
+        candidate.url,
+        candidate.src,
+        candidate.original,
+        candidate.original_url
+      );
+    }
+
+    if (
+      typeof candidate === "string" &&
+      /^https?:\/\/\S+$/i.test(candidate)
+    ) {
+      return candidate;
     }
   }
 
   return null;
 }
 
-function getProductName(payload, apiProduct) {
-  return (
-    firstDefined(
-      getNestedValue(payload, [
-        "data.product.name",
-        "data.product_name",
-        "data.productName",
-        "data.name",
-        "product.name",
-        "product_name",
-        "productName",
-      ]),
-      apiProduct?.name,
-      apiProduct?.title,
-      "Unknown product"
-    )
-  );
-}
-
-function getProductId(payload) {
-  return firstDefined(
-    payload?.data?.product_id,
-    payload?.data?.productId,
-    payload?.product_id,
-    payload?.productId,
-    payload?.data?.product?.id,
-    payload?.product?.id
-  );
-}
-
-function getWebhookVariant(payload) {
-  return firstDefined(
-    payload?.data?.variant,
-    payload?.data?.product_variant,
-    payload?.data?.productVariant,
-    payload?.data?.variant_name,
-    payload?.data?.variantName,
-    payload?.variant,
-    payload?.variant_name,
-    payload?.variantName
-  );
-}
-
-function getVariantName(variant) {
-  if (variant === undefined || variant === null) return undefined;
-
-  if (typeof variant === "string" || typeof variant === "number") {
-    return String(variant);
-  }
-
-  return firstDefined(
-    variant.name,
-    variant.title,
-    variant.label,
-    variant.id,
-    variant.variant_id,
-    variant.variantId
-  );
-}
-
-function getVariants(apiProduct) {
+function getVariants(product) {
   const variants = firstDefined(
-    apiProduct?.variants,
-    apiProduct?.product_variants,
-    apiProduct?.productVariants,
-    apiProduct?.options
+    product?.variants,
+    product?.product_variants,
+    product?.productVariants
   );
 
   if (Array.isArray(variants)) return variants;
@@ -208,57 +207,63 @@ function getVariants(apiProduct) {
   return [];
 }
 
-function findMatchingVariant(payload, apiProduct) {
-  const variants = getVariants(apiProduct);
+function findMatchingVariant(payload, product) {
+  const variants = getVariants(product);
   if (!variants.length) return null;
 
-  const webhookVariant = getWebhookVariant(payload);
-  const webhookVariantName = getVariantName(webhookVariant);
+  const ids = getVariantIds(payload);
 
-  const variantIds = [
-    payload?.data?.variant_id,
-    payload?.data?.variantId,
-    payload?.data?.variant?.id,
-    payload?.data?.variant?.variant_id,
-    payload?.data?.restocked_variant_ids?.[0],
-    payload?.variant_id,
-    payload?.variantId,
-  ]
-    .filter((value) => value !== undefined && value !== null)
-    .map(String);
-
-  if (variantIds.length) {
-    const byId = variants.find((variant) =>
-      variantIds.includes(
-        String(
-          firstDefined(
-            variant.id,
-            variant.variant_id,
-            variant.variantId,
-            ""
-          )
+  const matching = variants.find((variant) =>
+    ids.includes(
+      String(
+        firstDefined(
+          variant.id,
+          variant.variant_id,
+          variant.variantId,
+          ""
         )
       )
-    );
+    )
+  );
 
-    if (byId) return byId;
+  return matching || (variants.length === 1 ? variants[0] : null);
+}
+
+function findProductInResponse(response, productId) {
+  if (!response) return null;
+
+  if (Array.isArray(response)) {
+    return response.find(
+      (item) =>
+        String(
+          firstDefined(item.id, item.product_id, item.productId, "")
+        ) === String(productId)
+    ) || null;
   }
 
-  if (webhookVariantName) {
-    const target = String(webhookVariantName).toLowerCase();
+  if (typeof response !== "object") return null;
 
-    const byName = variants.find((variant) => {
-      const name = String(
-        firstDefined(variant.name, variant.title, variant.label, "")
-      ).toLowerCase();
-
-      return name === target;
-    });
-
-    if (byName) return byName;
+  if (
+    String(
+      firstDefined(
+        response.id,
+        response.product_id,
+        response.productId,
+        ""
+      )
+    ) === String(productId)
+  ) {
+    return response;
   }
 
-  return variants.length === 1 ? variants[0] : null;
+  for (const key of ["data", "product", "products", "results", "items"]) {
+    if (response[key]) {
+      const result = findProductInResponse(response[key], productId);
+      if (result) return result;
+    }
+  }
+
+  return null;
 }
 
 // --------------------------------------------------
@@ -268,7 +273,7 @@ function findMatchingVariant(payload, apiProduct) {
 function sellAuthRequest(path) {
   return new Promise((resolve, reject) => {
     if (!SELLAUTH_API_KEY) {
-      return reject(new Error("SELLAUTH_API_KEY is not configured"));
+      return reject(new Error("SELLAUTH_API_KEY is missing"));
     }
 
     const request = https.request(
@@ -286,19 +291,13 @@ function sellAuthRequest(path) {
         let body = "";
 
         response.setEncoding("utf8");
-
-        response.on("data", (chunk) => {
-          body += chunk;
-        });
+        response.on("data", (chunk) => (body += chunk));
 
         response.on("end", () => {
-          if (
-            response.statusCode < 200 ||
-            response.statusCode >= 300
-          ) {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
             return reject(
               new Error(
-                `SellAuth API returned HTTP ${response.statusCode}: ${body.slice(0, 300)}`
+                `SellAuth API HTTP ${response.statusCode}: ${body.slice(0, 250)}`
               )
             );
           }
@@ -306,16 +305,15 @@ function sellAuthRequest(path) {
           try {
             resolve(body ? JSON.parse(body) : {});
           } catch {
-            reject(new Error("SellAuth API returned invalid JSON"));
+            reject(new Error("Invalid JSON from SellAuth"));
           }
         });
       }
     );
 
-    request.on("timeout", () => {
-      request.destroy(new Error("SellAuth API request timed out"));
-    });
-
+    request.on("timeout", () =>
+      request.destroy(new Error("SellAuth API timed out"))
+    );
     request.on("error", reject);
     request.end();
   });
@@ -328,11 +326,11 @@ async function getSellAuthProduct(productId) {
     `/v1/shops/${encodeURIComponent(SELLAUTH_SHOP_ID)}/products`;
 
   const response = await sellAuthRequest(path);
-  return findProductObject(response, productId);
+  return findProductInResponse(response, productId);
 }
 
 // --------------------------------------------------
-// EMBEDS
+// SALE EMBED
 // --------------------------------------------------
 
 function buildSaleEmbed(payload) {
@@ -374,8 +372,8 @@ function buildSaleEmbed(payload) {
     data?.customer?.name,
     data?.customer_name,
     data?.customerName,
-    data?.email,
-    data?.customer?.email
+    data?.customer?.email,
+    data?.email
   );
 
   const embed = new EmbedBuilder()
@@ -417,34 +415,37 @@ function buildSaleEmbed(payload) {
   return embed;
 }
 
-function buildRestockEmbed(payload, apiProduct = null) {
-  const productId = getProductId(payload);
-  const webhookVariant = getWebhookVariant(payload);
-  const matchingVariant = findMatchingVariant(payload, apiProduct);
+// --------------------------------------------------
+// RESTOCK EMBED WITH PRODUCT IMAGE
+// --------------------------------------------------
 
-  const productName = getProductName(payload, apiProduct);
+function buildRestockEmbed(payload, product = null) {
+  const productId = getProductId(payload);
+  const variant = findMatchingVariant(payload, product);
+
+  const productName = getProductName(payload, product);
 
   const variantName = firstDefined(
-    getVariantName(webhookVariant),
-    matchingVariant?.name,
-    matchingVariant?.title,
-    matchingVariant?.label
+    variant?.name,
+    variant?.title,
+    variant?.label,
+    payload?.data?.variant_name,
+    payload?.data?.variantName,
+    typeof payload?.data?.variant === "string"
+      ? payload.data.variant
+      : undefined
   );
 
   const price = firstDefined(
-    matchingVariant?.price,
-    matchingVariant?.unit_price,
-    matchingVariant?.unitPrice,
-    matchingVariant?.price_amount,
-    matchingVariant?.priceAmount,
-    matchingVariant?.amount,
-    matchingVariant?.value,
-    apiProduct?.price,
-    apiProduct?.unit_price,
-    apiProduct?.unitPrice,
-    apiProduct?.price_amount,
-    apiProduct?.priceAmount,
-    apiProduct?.amount,
+    variant?.price,
+    variant?.unit_price,
+    variant?.unitPrice,
+    variant?.price_amount,
+    variant?.priceAmount,
+    variant?.amount,
+    product?.price,
+    product?.unit_price,
+    product?.unitPrice,
     payload?.data?.price,
     payload?.data?.amount,
     payload?.price,
@@ -452,31 +453,31 @@ function buildRestockEmbed(payload, apiProduct = null) {
   );
 
   const currency = firstDefined(
-    matchingVariant?.currency,
-    matchingVariant?.price_currency,
-    matchingVariant?.priceCurrency,
-    apiProduct?.currency,
-    apiProduct?.price_currency,
-    apiProduct?.priceCurrency,
+    variant?.currency,
+    variant?.price_currency,
+    product?.currency,
+    product?.price_currency,
     payload?.data?.currency,
     payload?.currency,
     "EUR"
   );
 
   const stock = firstDefined(
-    matchingVariant?.stock,
-    matchingVariant?.quantity,
-    matchingVariant?.stock_count,
-    matchingVariant?.stockCount,
-    apiProduct?.stock,
-    apiProduct?.quantity,
-    apiProduct?.stock_count,
-    apiProduct?.stockCount,
+    variant?.stock,
+    variant?.quantity,
+    variant?.stock_count,
+    variant?.stockCount,
+    product?.stock,
+    product?.quantity,
+    product?.stock_count,
+    product?.stockCount,
     payload?.data?.stock,
     payload?.data?.quantity,
     payload?.stock,
     payload?.quantity
   );
+
+  const imageUrl = getProductImage(payload, product, variant);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
@@ -519,22 +520,29 @@ function buildRestockEmbed(payload, apiProduct = null) {
     });
   }
 
+  if (imageUrl) {
+    embed.setThumbnail(imageUrl);
+    console.log("Restock image URL found for product:", productId);
+  } else {
+    console.warn("No product image URL found for product:", productId);
+  }
+
   return embed;
 }
 
 // --------------------------------------------------
-// DISCORD CHANNEL HELPERS
+// DISCORD CHANNEL
 // --------------------------------------------------
 
 async function sendToChannel(channelId, message) {
   if (!channelId) {
-    throw new Error("The destination channel ID is not configured");
+    throw new Error("Destination channel ID is missing");
   }
 
   const channel = await client.channels.fetch(channelId);
 
   if (!channel || !channel.isTextBased() || !channel.send) {
-    throw new Error("The configured destination is not a text channel");
+    throw new Error("Destination is not a text channel");
   }
 
   return channel.send(message);
@@ -564,23 +572,16 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("testventa")
-    .setDescription("Test the SIMBA SHOP sale notification"),
+    .setDescription("Test the sale notification"),
 
   new SlashCommandBuilder()
     .setName("teststock")
-    .setDescription("Test the SIMBA SHOP restock notification"),
+    .setDescription("Test the restock notification"),
 ].map((command) => command.toJSON());
-
-// --------------------------------------------------
-// REGISTER COMMANDS
-// --------------------------------------------------
 
 async function registerCommands() {
   if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.error(
-      "Missing required variables: DISCORD_TOKEN, CLIENT_ID or GUILD_ID"
-    );
-    return;
+    throw new Error("Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID");
   }
 
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -597,7 +598,7 @@ async function registerCommands() {
 // DISCORD EVENTS
 // --------------------------------------------------
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`SIMBA SHOP online as ${client.user.tag}`);
 });
 
@@ -658,8 +659,8 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "teststock") {
       await interaction.deferReply({ ephemeral: true });
 
-      const testPayload = {
-        event: "notification.shop_product_restocked",
+      const payload = {
+        event: "NOTIFICATION.SHOP_PRODUCT_RESTOCKED",
         shop_id: SELLAUTH_SHOP_ID,
         data: {
           product_id: 913357,
@@ -671,7 +672,7 @@ client.on("interactionCreate", async (interaction) => {
         },
       };
 
-      const embed = buildRestockEmbed(testPayload);
+      const embed = buildRestockEmbed(payload);
 
       await sendToChannel(RESTOCK_CHANNEL_ID, { embeds: [embed] });
 
@@ -680,7 +681,7 @@ client.on("interactionCreate", async (interaction) => {
   } catch (error) {
     console.error("Command error:", error);
 
-    const message = "An error occurred. Check the Railway logs.";
+    const message = "An error occurred. Check Railway logs.";
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
@@ -697,11 +698,7 @@ client.on("interactionCreate", async (interaction) => {
 // SELLAUTH WEBHOOK
 // --------------------------------------------------
 
-app.post("/webhooks/sellauth", async (req, res) => {
-  // Optional shared-token verification.
-  // Configure SELLAUTH_WEBHOOK_TOKEN in Railway and use the same
-  // token in the SellAuth webhook URL:
-  // /webhooks/sellauth?token=YOUR_SECRET
+app.post("/webhooks/sellauth", (req, res) => {
   if (
     SELLAUTH_WEBHOOK_TOKEN &&
     req.query.token !== SELLAUTH_WEBHOOK_TOKEN
@@ -714,17 +711,19 @@ app.post("/webhooks/sellauth", async (req, res) => {
     firstDefined(payload.event, payload.type, payload.name, "")
   ).toLowerCase();
 
-  console.log("SellAuth webhook received:", event || "(event not specified)");
+  console.log("SellAuth webhook received:", event);
   console.log("SellAuth webhook keys:", Object.keys(payload));
 
-  // Respond immediately so the webhook sender does not have to wait
-  // for Discord or the SellAuth API lookup.
+  // Acknowledge SellAuth immediately.
   res.status(200).json({ received: true });
 
+  void processWebhook(event, payload);
+});
+
+async function processWebhook(event, payload) {
   try {
     const isRestock =
-      event.includes("restock") ||
-      event.includes("stock");
+      event.includes("restock") || event.includes("stock");
 
     const isSale =
       event.includes("sale") ||
@@ -735,7 +734,7 @@ app.post("/webhooks/sellauth", async (req, res) => {
     if (isRestock) {
       const productId = getProductId(payload);
 
-      // Send the notification immediately, without waiting for the API.
+      // Send immediately, then update the same message with API data.
       const initialEmbed = buildRestockEmbed(payload, null);
       const message = await sendToChannel(
         RESTOCK_CHANNEL_ID,
@@ -746,22 +745,15 @@ app.post("/webhooks/sellauth", async (req, res) => {
         "Restock notification sent:",
         new Date().toISOString(),
         "product:",
-        productId || "unknown"
+        productId
       );
 
-      // Look up the product in the background and update the message.
       if (productId && SELLAUTH_API_KEY) {
-        getSellAuthProduct(productId)
-          .then(async (apiProduct) => {
-            if (!apiProduct) {
-              console.warn(
-                "SellAuth product not found in API response:",
-                productId
-              );
-              return;
-            }
+        try {
+          const product = await getSellAuthProduct(productId);
 
-            const updatedEmbed = buildRestockEmbed(payload, apiProduct);
+          if (product) {
+            const updatedEmbed = buildRestockEmbed(payload, product);
 
             await message.edit({ embeds: [updatedEmbed] });
 
@@ -769,13 +761,12 @@ app.post("/webhooks/sellauth", async (req, res) => {
               "Restock notification updated with product data:",
               productId
             );
-          })
-          .catch((error) => {
-            console.error(
-              "SellAuth product lookup failed:",
-              error.message
-            );
-          });
+          } else {
+            console.warn("Product not found in SellAuth API:", productId);
+          }
+        } catch (error) {
+          console.error("SellAuth product lookup failed:", error.message);
+        }
       }
 
       return;
@@ -792,9 +783,9 @@ app.post("/webhooks/sellauth", async (req, res) => {
 
     console.log("SellAuth event ignored:", event || "(unknown)");
   } catch (error) {
-    console.error("SellAuth webhook processing error:", error);
+    console.error("Webhook processing error:", error);
   }
-});
+}
 
 // --------------------------------------------------
 // HEALTH CHECK
@@ -813,7 +804,7 @@ app.get("/health", (_req, res) => {
 });
 
 // --------------------------------------------------
-// START SERVER AND BOT
+// START
 // --------------------------------------------------
 
 app.listen(PORT, () => {
