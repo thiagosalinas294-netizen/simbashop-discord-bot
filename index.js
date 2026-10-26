@@ -827,4 +827,3 @@ if (!process.env.DISCORD_TOKEN) {
     console.error("Discord login error:", error);
   });
 }
-```
