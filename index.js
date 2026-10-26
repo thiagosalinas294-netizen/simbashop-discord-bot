@@ -1,9 +1,8 @@
-
+```js
 require("dotenv").config();
 
 const express = require("express");
 const crypto = require("crypto");
-
 const {
   Client,
   GatewayIntentBits,
@@ -18,6 +17,7 @@ const {
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
 const GOLD = 0xD4AF37;
+const STORE_URL = "https://simba-market.mysellauth.com/";
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -35,7 +35,7 @@ const processedDeliveries = new Map();
 const sayCommand = new SlashCommandBuilder()
   .setName("say")
   .setDescription("Send a message through SIMBA SHOP")
-  .addChannelOption((option) =>
+  .addChannelOption(option =>
     option
       .setName("canal")
       .setDescription("Channel where the message will be sent")
@@ -45,7 +45,7 @@ const sayCommand = new SlashCommandBuilder()
       )
       .setRequired(true)
   )
-  .addStringOption((option) =>
+  .addStringOption(option =>
     option
       .setName("mensaje")
       .setDescription("Message to send")
@@ -78,7 +78,7 @@ async function registerCommands() {
         sayCommand,
         testVentaCommand,
         testStockCommand,
-      ].map((command) => command.toJSON()),
+      ].map(command => command.toJSON()),
     }
   );
 
@@ -91,34 +91,80 @@ async function registerCommands() {
 
 function firstDefined(...values) {
   return values.find(
-    (value) =>
-      value !== undefined &&
+    value => value !== undefined &&
       value !== null &&
       value !== ""
   );
 }
 
+function normalizeKey(key) {
+  return String(key)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function getPath(object, path) {
   return path.split(".").reduce((current, key) => {
-    if (current === null || current === undefined) return undefined;
+    if (current == null) return undefined;
     return current[key];
   }, object);
 }
 
-function findValue(objects, paths) {
-  for (const object of objects) {
-    if (!object || typeof object !== "object") continue;
+function collectObjects(root) {
+  const result = [];
+  const seen = new Set();
 
-    for (const path of paths) {
-      const value = getPath(object, path);
+  function walk(value, depth = 0) {
+    if (!value || typeof value !== "object" ||
+        depth > 12 || seen.has(value)) {
+      return;
+    }
 
-      if (
-        value !== undefined &&
-        value !== null &&
-        value !== ""
-      ) {
-        return value;
+    seen.add(value);
+    result.push(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+    } else {
+      for (const item of Object.values(value)) {
+        if (item && typeof item === "object") {
+          walk(item, depth + 1);
+        }
       }
+    }
+  }
+
+  walk(root);
+  return result;
+}
+
+function findDeepValue(root, aliases) {
+  const objects = collectObjects(root);
+  const wanted = aliases.map(normalizeKey);
+
+  // Prefer exact field-name matches.
+  for (const alias of wanted) {
+    for (const object of objects) {
+      if (Array.isArray(object)) continue;
+
+      for (const [key, value] of Object.entries(object)) {
+        if (
+          normalizeKey(key) === alias &&
+          value !== undefined &&
+          value !== null &&
+          value !== ""
+        ) {
+          return value;
+        }
+      }
+    }
+  }
+
+  // Support common nested paths too.
+  for (const alias of aliases) {
+    const value = getPath(root, alias);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
     }
   }
 
@@ -141,11 +187,7 @@ function safeText(value, fallback = "Not available") {
 
     if (readable !== undefined) return String(readable);
 
-    try {
-      return JSON.stringify(value).slice(0, 1000);
-    } catch {
-      return fallback;
-    }
+    return fallback;
   }
 
   return String(value).slice(0, 1000);
@@ -156,16 +198,19 @@ function formatMoney(value, currency = "") {
     return "Not available";
   }
 
-  if (typeof value === "object") {
-    const amount = firstDefined(value.amount, value.value);
-    const code = firstDefined(value.currency, value.code, currency);
+  let amount = value;
+  let code = currency;
 
-    if (amount !== undefined) {
-      return String(amount) + (code ? " " + String(code) : "");
-    }
+  if (typeof value === "object") {
+    amount = firstDefined(value.amount, value.value, value.price);
+    code = firstDefined(value.currency, value.currency_code, value.code, currency);
+
+    if (amount === undefined) return "Not available";
   }
 
-  return String(value) + (currency ? " " + String(currency) : "");
+  if (typeof amount === "object") return "Not available";
+
+  return String(amount) + (code ? " " + String(code) : "");
 }
 
 function getOrder(payload) {
@@ -178,30 +223,28 @@ function getOrder(payload) {
 }
 
 function getProduct(payload) {
-  const order = getOrder(payload);
-
   return (
     payload?.data?.product ||
     payload?.product ||
     payload?.data?.item ||
     payload?.item ||
-    order?.items?.[0] ||
-    order?.line_items?.[0] ||
-    order?.products?.[0] ||
-    order?.product ||
+    payload?.data?.variant?.product ||
+    payload?.variant?.product ||
+    payload?.order?.items?.[0] ||
+    payload?.data?.order?.items?.[0] ||
+    payload?.order?.line_items?.[0] ||
+    payload?.data?.order?.line_items?.[0] ||
+    payload?.order?.products?.[0] ||
+    payload?.data?.order?.products?.[0] ||
     payload?.data ||
     payload
   );
 }
 
 function getEventName(payload, req) {
-  const header = firstDefined(
-    req.headers["x-sellauth-event"],
-    req.headers["x-webhook-event"]
-  );
-
   const raw = firstDefined(
-    header,
+    req.headers["x-sellauth-event"],
+    req.headers["x-webhook-event"],
     payload?.event,
     payload?.type,
     payload?.name,
@@ -216,15 +259,13 @@ function getEventName(payload, req) {
 }
 
 function getDeliveryId(payload, req) {
-  return String(
-    firstDefined(
-      req.headers["x-sellauth-delivery"],
-      req.headers["x-webhook-id"],
-      payload?.delivery_id,
-      payload?.event_id,
-      ""
-    )
-  );
+  return String(firstDefined(
+    req.headers["x-sellauth-delivery"],
+    req.headers["x-webhook-id"],
+    payload?.delivery_id,
+    payload?.event_id,
+    ""
+  ));
 }
 
 function remember(map, id) {
@@ -237,6 +278,48 @@ function remember(map, id) {
   }
 }
 
+function findProductName(payload) {
+  const product = getProduct(payload);
+
+  return firstDefined(
+    findDeepValue(product, [
+      "product_name",
+      "productName",
+      "item_name",
+      "itemName",
+      "title",
+      "name",
+    ]),
+    findDeepValue(payload?.data?.product, ["name", "title"]),
+    findDeepValue(payload?.product, ["name", "title"]),
+    findDeepValue(payload, [
+      "product_name",
+      "productName",
+      "item_name",
+      "itemName",
+    ])
+  );
+}
+
+function findProductUrl(payload) {
+  const value = findDeepValue(getProduct(payload), [
+    "product_url",
+    "productUrl",
+    "purchase_url",
+    "purchaseUrl",
+    "product_link",
+    "productLink",
+    "url",
+    "link",
+  ]);
+
+  if (typeof value === "string" && /^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  return STORE_URL;
+}
+
 // =====================================
 // SALES EMBED
 // =====================================
@@ -244,123 +327,92 @@ function remember(map, id) {
 function buildSaleEmbed(payload) {
   const order = getOrder(payload);
   const product = getProduct(payload);
-  const objects = [payload, payload?.data, order, product];
 
-  const name = findValue(objects, [
-    "product_name",
-    "name",
-    "title",
-    "product.name",
-    "product.title",
-    "item.name",
-    "item.title",
-  ]);
+  const name = findProductName(payload) ||
+    findDeepValue(order, ["product_name", "productName"]) ||
+    "Not available";
 
-  const orderId = findValue(objects, [
-    "order_id",
-    "id",
-    "uuid",
-    "order.id",
-    "order.uuid",
-  ]);
+  const orderId = firstDefined(
+    findDeepValue(order, ["order_id", "orderId", "id", "uuid"]),
+    findDeepValue(payload, ["order_id", "orderId"])
+  );
 
-  const total = findValue(objects, [
-    "total",
-    "total_price",
-    "amount",
-    "price",
-    "subtotal",
-    "order.total",
-    "order.amount",
-    "payment.amount",
-  ]);
+  const total = firstDefined(
+    findDeepValue(order, [
+      "total",
+      "total_price",
+      "totalPrice",
+      "amount",
+      "subtotal",
+    ]),
+    findDeepValue(payload, ["total", "total_price", "totalPrice"])
+  );
 
-  const currency = findValue(objects, [
-    "currency",
-    "currency_code",
-    "order.currency",
-    "payment.currency",
-  ]);
+  const currency = firstDefined(
+    findDeepValue(order, ["currency", "currency_code", "currencyCode"]),
+    findDeepValue(payload, ["currency", "currency_code"])
+  );
 
-  const quantity = findValue(objects, [
-    "quantity",
-    "qty",
-    "order.quantity",
-  ]);
+  const quantity = firstDefined(
+    findDeepValue(product, ["quantity", "qty", "amount_ordered"]),
+    findDeepValue(order, ["quantity", "qty"]),
+    1
+  );
 
-  const payment = findValue(objects, [
+  const payment = findDeepValue(payload, [
     "payment_method",
+    "paymentMethod",
     "gateway",
     "payment.method",
-    "payment_method.name",
   ]);
 
-  const customer = findValue(objects, [
-    "customer.email",
+  const customer = findDeepValue(payload, [
     "customer_email",
-    "email",
+    "customerEmail",
     "buyer.email",
+    "customer.email",
   ]);
 
-  const coupon = findValue(objects, [
+  const coupon = findDeepValue(payload, [
     "coupon_code",
-    "coupon",
+    "couponCode",
     "discount.code",
   ]);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("SIMBA SHOP | New Sale")
+    .setTitle("🦁 SIMBA SHOP | New Sale")
     .setDescription("A new order has been received!")
     .addFields(
-      {
-        name: "Product",
-        value: safeText(name),
-        inline: false,
-      },
-      {
-        name: "Quantity",
-        value: safeText(quantity, "1"),
-        inline: true,
-      },
-      {
-        name: "Total",
-        value: formatMoney(total, currency),
-        inline: true,
-      },
-      {
-        name: "Payment",
-        value: safeText(payment),
-        inline: true,
-      },
-      {
-        name: "Coupon",
-        value: safeText(coupon, "None"),
-        inline: true,
-      },
-      {
-        name: "Order ID",
-        value: safeText(orderId),
-        inline: true,
-      },
-      {
-        name: "Customer",
-        value: safeText(customer),
-        inline: true,
-      }
+      { name: "Product", value: safeText(name), inline: false },
+      { name: "Quantity", value: safeText(quantity, "1"), inline: true },
+      { name: "Total", value: formatMoney(total, currency), inline: true },
+      { name: "Payment", value: safeText(payment), inline: true },
+      { name: "Coupon", value: safeText(coupon, "None"), inline: true },
+      { name: "Order ID", value: safeText(orderId), inline: true },
+      { name: "Customer", value: safeText(customer), inline: true }
     )
-    .setFooter({ text: "SIMBA SHOP | SellAuth" })
+    .setFooter({ text: "🦁 SIMBA SHOP • Powered by SellAuth" })
     .setTimestamp();
 
-  const url = findValue(objects, [
-    "product_url",
-    "url",
-    "product.url",
-    "product.link",
+  embed.setURL(findProductUrl(payload));
+
+  const image = findDeepValue(product, [
+    "image_url",
+    "imageUrl",
+    "thumbnail_url",
+    "thumbnailUrl",
+    "image",
+    "thumbnail",
   ]);
 
-  if (typeof url === "string" && url.startsWith("https://")) {
-    embed.setURL(url);
+  const imageUrl = typeof image === "string"
+    ? image
+    : image?.url;
+
+  if (typeof imageUrl === "string" &&
+      /^https?:\/\//i.test(imageUrl)) {
+    embed.setThumbnail(imageUrl);
   }
 
   return embed;
@@ -372,71 +424,77 @@ function buildSaleEmbed(payload) {
 
 function buildRestockEmbed(payload) {
   const product = getProduct(payload);
-  const objects = [
-    payload,
-    payload?.data,
-    payload?.product,
-    payload?.data?.product,
-    product,
-  ];
 
-  const name = findValue(objects, [
-    "product_name",
-    "name",
-    "title",
-    "product.name",
-    "product.title",
-    "item.name",
-    "item.title",
-  ]);
+  const name = findProductName(payload);
 
-  const variant = findValue(objects, [
-    "variant_name",
-    "variant.name",
-    "variant",
-    "options.name",
-  ]);
+  const variant = firstDefined(
+    findDeepValue(product, [
+      "variant_name",
+      "variantName",
+      "variant_title",
+      "variantTitle",
+    ]),
+    findDeepValue(payload, [
+      "variant_name",
+      "variantName",
+    ]),
+    "Default"
+  );
 
-  const stock = findValue(objects, [
-    "stock",
+  const stock = findDeepValue(payload, [
+    "current_stock",
+    "currentStock",
     "stock_quantity",
+    "stockQuantity",
     "quantity_available",
-    "inventory",
+    "quantityAvailable",
     "new_stock",
+    "newStock",
     "new_quantity",
-    "quantity",
+    "newQuantity",
+    "inventory_quantity",
+    "inventoryQuantity",
+    "stock",
+    "inventory",
     "available",
-    "product.stock",
-    "product.quantity",
-    "inventory.quantity",
   ]);
 
-  const price = findValue(objects, [
-    "price",
-    "price_amount",
-    "unit_price",
-    "product.price",
-    "variant.price",
-  ]);
+  const price = firstDefined(
+    findDeepValue(product, [
+      "unit_price",
+      "unitPrice",
+      "price_amount",
+      "priceAmount",
+      "price",
+    ]),
+    findDeepValue(payload, [
+      "unit_price",
+      "unitPrice",
+      "price_amount",
+      "priceAmount",
+      "price",
+    ])
+  );
 
-  const currency = findValue(objects, [
-    "currency",
-    "currency_code",
-    "product.currency",
-  ]);
+  const currency = firstDefined(
+    findDeepValue(product, [
+      "currency",
+      "currency_code",
+      "currencyCode",
+    ]),
+    findDeepValue(payload, [
+      "currency",
+      "currency_code",
+      "currencyCode",
+    ])
+  );
 
-  const url = findValue(objects, [
-    "product_url",
-    "url",
-    "link",
-    "product.url",
-    "product.link",
-  ]);
+  const url = findProductUrl(payload);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("SIMBA SHOP | Stock Replenished")
-    .setDescription("**A product's stock has been updated!**")
+    .setTitle("🦁 SIMBA SHOP | Stock Replenished")
+    .setDescription("A product's stock has been updated!")
     .addFields(
       {
         name: "Product",
@@ -457,19 +515,33 @@ function buildRestockEmbed(payload) {
         name: "Current Stock",
         value: safeText(stock),
         inline: true,
+      },
+      {
+        name: "Purchase",
+        value: "[Click here to purchase](" + url + ")",
+        inline: false,
       }
     )
-    .setFooter({ text: "SIMBA SHOP | SellAuth" })
+    .setURL(url)
+    .setFooter({ text: "🦁 SIMBA SHOP • Powered by SellAuth" })
     .setTimestamp();
 
-  if (typeof url === "string" && url.startsWith("https://")) {
-    embed.addFields({
-      name: "Purchase",
-      value: "[Click here to purchase](" + url + ")",
-      inline: false,
-    });
+  const image = findDeepValue(product, [
+    "image_url",
+    "imageUrl",
+    "thumbnail_url",
+    "thumbnailUrl",
+    "image",
+    "thumbnail",
+  ]);
 
-    embed.setURL(url);
+  const imageUrl = typeof image === "string"
+    ? image
+    : image?.url;
+
+  if (typeof imageUrl === "string" &&
+      /^https?:\/\//i.test(imageUrl)) {
+    embed.setThumbnail(imageUrl);
   }
 
   return embed;
@@ -494,7 +566,7 @@ async function sendToChannel(channelId, options) {
 }
 
 // =====================================
-// TESTS
+// TEST COMMANDS
 // =====================================
 
 async function sendSaleTest() {
@@ -527,7 +599,7 @@ async function sendStockTest() {
       stock: 24,
       price: 5,
       currency: "USD",
-    product_url: "https://simba-market.mysellauth.com/",
+      product_url: STORE_URL,
     },
   };
 
@@ -581,12 +653,10 @@ app.post("/webhooks/sellauth", async (req, res) => {
 
   console.log("SellAuth event received:", event || "(no event name)");
 
-  // TEMPORARY DEBUG LOG:
-  // Check Railway logs to see the real field names.
-  // Remove this log after troubleshooting if payloads contain personal data.
+  // Log field names only, not customer data or secrets.
   console.log(
-    "SELLAUTH PAYLOAD:",
-    JSON.stringify(payload, null, 2)
+    "SellAuth payload top-level keys:",
+    Object.keys(payload).join(", ")
   );
 
   if (deliveryId && processedDeliveries.has(deliveryId)) {
@@ -614,6 +684,22 @@ app.post("/webhooks/sellauth", async (req, res) => {
       );
 
     if (stockEvent) {
+      console.log(
+        "Restock fields detected:",
+        JSON.stringify({
+          product: findProductName(payload) || null,
+          price: findDeepValue(payload, ["price", "unit_price", "price_amount"]) ?? null,
+          stock: findDeepValue(payload, [
+            "current_stock",
+            "stock_quantity",
+            "quantity_available",
+            "new_stock",
+            "stock",
+            "inventory",
+          ]) ?? null,
+        })
+      );
+
       await sendToChannel(process.env.RESTOCK_CHANNEL_ID, {
         content: "@everyone",
         embeds: [buildRestockEmbed(payload)],
@@ -682,17 +768,14 @@ app.get("/", (req, res) => {
 // INTERACTIONS
 // =====================================
 
-client.on("interactionCreate", async (interaction) => {
+client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
     if (interaction.commandName === "say") {
       const allowedUserId = process.env.SAY_ALLOWED_USER_ID;
 
-      if (
-        !allowedUserId ||
-        interaction.user.id !== allowedUserId
-      ) {
+      if (!allowedUserId || interaction.user.id !== allowedUserId) {
         return interaction.reply({
           content: "You are not allowed to use this command.",
           flags: MessageFlags.Ephemeral,
@@ -776,7 +859,8 @@ client.once("ready", async () => {
 if (!process.env.DISCORD_TOKEN) {
   console.error("Missing DISCORD_TOKEN in Railway variables.");
 } else {
-  client.login(process.env.DISCORD_TOKEN).catch((error) => {
+  client.login(process.env.DISCORD_TOKEN).catch(error => {
     console.error("Discord login error:", error);
   });
 }
+```
