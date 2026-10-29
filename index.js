@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -7,6 +6,9 @@ const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   SlashCommandBuilder,
   REST,
   Routes,
@@ -29,6 +31,9 @@ const {
 const SELLAUTH_SHOP_ID = process.env.SELLAUTH_SHOP_ID || "275335";
 const STORE_URL = "https://simba-market.mysellauth.com/";
 const GOLD = 0xd4af37;
+
+// Rol que se menciona en cada restock (puedes cambiarlo con la variable STOCK_ROLE_ID)
+const STOCK_ROLE_ID = process.env.STOCK_ROLE_ID || "1550639490123694100";
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -73,6 +78,38 @@ function formatMoney(value, currency = "EUR") {
     : String(value);
 
   return currency ? `${formatted} ${currency}` : formatted;
+}
+
+// Formato tipo "€0.79" para el restock
+function formatPriceSymbol(value, currency = "EUR") {
+  if (value === undefined || value === null || value === "") {
+    return "Not available";
+  }
+
+  if (typeof value === "object") {
+    value = firstDefined(
+      value.amount,
+      value.value,
+      value.price,
+      value.total
+    );
+  }
+
+  if (value === undefined || value === null || value === "") {
+    return "Not available";
+  }
+
+  const number = Number(value);
+  const formatted = Number.isFinite(number)
+    ? number.toFixed(2)
+    : String(value);
+
+  const symbols = { EUR: "€", USD: "$", GBP: "£" };
+  const code = String(currency || "").toUpperCase();
+
+  return symbols[code]
+    ? `${symbols[code]}${formatted}`
+    : `${formatted} ${code}`.trim();
 }
 
 function getPath(object, path) {
@@ -567,10 +604,10 @@ function buildSaleEmbed(payload) {
 }
 
 // --------------------------------------------------
-// RESTOCK EMBED
+// RESTOCK MESSAGE (embed + botón Buy Now + mención @stock)
 // --------------------------------------------------
 
-function buildRestockEmbed(payload, product = null) {
+function buildRestockMessage(payload, product = null) {
   const productId = getProductId(payload);
   const variant = findMatchingVariant(payload, product);
   const productName = getProductName(payload, product);
@@ -639,58 +676,31 @@ function buildRestockEmbed(payload, product = null) {
     variant
   );
 
-  const description = productUrl
-    ? `**${String(productName).slice(0, 250)}**\n\n` +
-      `[🛒 Buy this product](${productUrl})`
-    : `**${String(productName).slice(0, 250)}**\n\n` +
-      `[🛍️ Visit SIMBA SHOP](${STORE_URL})`;
+  const buyUrl = productUrl || STORE_URL;
+
+  // Nombre completo: "Producto - Variante"
+  const fullName = variantName
+    ? `${productName} - ${variantName}`
+    : String(productName);
+
+  const stockText =
+    stock !== undefined ? `${stock} units` : "Not available";
+
+  const description =
+    `**Service:** ${fullName.slice(0, 200)}\n` +
+    `**Available stock:** ${stockText}\n` +
+    `**Price:** ${formatPriceSymbol(price, currency)}\n\n` +
+    `**Information**\n` +
+    `We have recently restocked this product!`;
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("📦 SIMBA SHOP • Restock")
-    .setDescription(description)
-    .addFields(
-      {
-        name: "Product",
-        value: String(productName).slice(0, 1024),
-        inline: true,
-      },
-      {
-        name: "Price",
-        value: formatMoney(price, currency),
-        inline: true,
-      },
-      {
-        name: "Current Stock",
-        value: stock !== undefined
-          ? String(stock)
-          : "Not available",
-        inline: true,
-      }
-    )
-    .setTimestamp()
-    .setFooter({
-      text: "🦁 SIMBA SHOP • SellAuth",
-    });
-
-  if (variantName) {
-    embed.addFields({
-      name: "Variant",
-      value: String(variantName).slice(0, 1024),
-      inline: true,
-    });
-  }
-
-  if (productId !== undefined) {
-    embed.addFields({
-      name: "Product ID",
-      value: String(productId),
-      inline: true,
-    });
-  }
+    .setTitle(`${fullName} - RESTOCKED`.slice(0, 256))
+    .setURL(buyUrl)
+    .setDescription(description);
 
   if (imageUrl) {
-    embed.setThumbnail(imageUrl);
+    embed.setImage(imageUrl);
     console.log(
       "Restock image URL found for product:",
       productId
@@ -714,7 +724,19 @@ function buildRestockEmbed(payload, product = null) {
     );
   }
 
-  return embed;
+  const button = new ButtonBuilder()
+    .setLabel("Buy Now")
+    .setStyle(ButtonStyle.Link)
+    .setURL(buyUrl);
+
+  const row = new ActionRowBuilder().addComponents(button);
+
+  return {
+    content: `<@&${STOCK_ROLE_ID}>`,
+    embeds: [embed],
+    components: [row],
+    allowedMentions: { roles: [STOCK_ROLE_ID] },
+  };
 }
 
 // --------------------------------------------------
@@ -899,11 +921,10 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      const embed = buildRestockEmbed(payload, product);
-
-      await sendToChannel(RESTOCK_CHANNEL_ID, {
-        embeds: [embed],
-      });
+      await sendToChannel(
+        RESTOCK_CHANNEL_ID,
+        buildRestockMessage(payload, product)
+      );
 
       return interaction.editReply(
         "Test restock notification sent."
@@ -1001,11 +1022,10 @@ async function processWebhook(event, payload) {
         }
       }
 
-      const embed = buildRestockEmbed(payload, product);
-
-      await sendToChannel(RESTOCK_CHANNEL_ID, {
-        embeds: [embed],
-      });
+      await sendToChannel(
+        RESTOCK_CHANNEL_ID,
+        buildRestockMessage(payload, product)
+      );
 
       console.log(
         "Restock notification sent:",
