@@ -518,16 +518,46 @@ async function getSellAuthProduct(productId) {
 // SALE EMBED
 // --------------------------------------------------
 
+function maskEmail(email) {
+  const text = String(email || "");
+  const at = text.indexOf("@");
+
+  if (at <= 0) return text;
+
+  const name = text.slice(0, at);
+  const domain = text.slice(at);
+
+  return `${name.slice(0, 2)}·····${domain}`;
+}
+
+function prettyText(value) {
+  const text = String(value || "").replace(/[_-]+/g, " ").trim();
+  return text
+    ? text.charAt(0).toUpperCase() + text.slice(1)
+    : text;
+}
+
 function buildSaleEmbed(payload) {
   const data = payload?.data || payload;
 
-  const productName = firstDefined(
-    data?.product?.name,
-    data?.product?.title,
-    data?.product_name,
-    data?.productName,
-    data?.name,
-    "Digital product"
+  const productName = String(
+    firstDefined(
+      data?.product?.name,
+      data?.product?.title,
+      data?.product_name,
+      data?.productName,
+      data?.items?.[0]?.product?.name,
+      data?.items?.[0]?.name,
+      data?.name,
+      "Digital product"
+    )
+  );
+
+  const quantity = firstDefined(
+    data?.quantity,
+    data?.items?.[0]?.quantity,
+    data?.product?.quantity,
+    1
   );
 
   const orderId = firstDefined(
@@ -553,52 +583,94 @@ function buildSaleEmbed(payload) {
     "EUR"
   );
 
+  const usdAmount = firstDefined(
+    data?.usd_amount,
+    data?.usdAmount,
+    data?.amount_usd,
+    data?.total_usd,
+    data?.price_usd
+  );
+
+  const method = firstDefined(
+    data?.gateway,
+    data?.payment_method,
+    data?.paymentMethod,
+    data?.method,
+    data?.payment?.method,
+    data?.payment?.gateway
+  );
+
+  const status = firstDefined(
+    data?.status,
+    data?.payment?.status,
+    "completed"
+  );
+
   const buyer = firstDefined(
+    data?.customer?.email,
+    data?.email,
+    data?.customer_email,
+    data?.customerEmail,
     data?.customer?.username,
     data?.customer?.name,
     data?.customer_name,
-    data?.customerName,
-    data?.customer?.email,
-    data?.email
+    data?.customerName
   );
+
+  let amountText = formatPriceSymbol(amount, currency);
+
+  if (usdAmount !== undefined) {
+    amountText += ` ≈ \`${formatPriceSymbol(usdAmount, "USD")}\``;
+  }
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("🦁 SIMBA SHOP • New Order")
-    .setDescription("A new order has been received!")
-    .addFields(
-      {
-        name: "Product",
-        value: String(productName).slice(0, 1024),
-        inline: true,
-      },
-      {
-        name: "Amount",
-        value: formatMoney(amount, currency),
-        inline: true,
-      }
-    )
+    .setAuthor({ name: "SIMBA SHOP · New Sale" })
+    .setTitle(productName.slice(0, 256))
     .setURL(STORE_URL)
-    .setTimestamp()
-    .setFooter({
-      text: "🦁 SIMBA SHOP • SellAuth",
+    .setDescription(
+      "**New sale completed!**\n" +
+      "───────────────────────\n\n" +
+      `🏷️ **${productName.slice(0, 200)}** ×${quantity}`
+    )
+    .addFields({
+      name: "Amount",
+      value: amountText,
     });
+
+  if (method) {
+    embed.addFields({
+      name: "Method",
+      value: `\`${prettyText(method)}\``,
+    });
+  }
+
+  embed.addFields({
+    name: "Status",
+    value: `\`${prettyText(status)}\``,
+  });
+
+  if (buyer) {
+    const shown = String(buyer).includes("@")
+      ? maskEmail(buyer)
+      : String(buyer);
+
+    embed.addFields({
+      name: "Customer",
+      value: `\`${shown.slice(0, 200)}\``,
+    });
+  }
 
   if (orderId !== undefined) {
     embed.addFields({
-      name: "Order ID",
-      value: String(orderId).slice(0, 1024),
-      inline: true,
+      name: "Order",
+      value: `\`#${String(orderId).slice(0, 100)}\``,
     });
   }
 
-  if (buyer) {
-    embed.addFields({
-      name: "Customer",
-      value: String(buyer).slice(0, 1024),
-      inline: true,
-    });
-  }
+  embed
+    .setTimestamp()
+    .setFooter({ text: "SIMBA SHOP · verified sale" });
 
   return embed;
 }
@@ -856,32 +928,19 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.commandName === "testventa") {
       await interaction.deferReply({ ephemeral: true });
 
-      const embed = new EmbedBuilder()
-        .setColor(GOLD)
-        .setTitle("🦁 SIMBA SHOP • New Order")
-        .setDescription("This is a test sale notification.")
-        .addFields(
-          {
-            name: "Product",
-            value: "Test product",
-            inline: true,
-          },
-          {
-            name: "Amount",
-            value: "1.00 EUR",
-            inline: true,
-          },
-          {
-            name: "Order ID",
-            value: "TEST-001",
-            inline: true,
-          }
-        )
-        .setURL(STORE_URL)
-        .setTimestamp()
-        .setFooter({
-          text: "🦁 SIMBA SHOP • SellAuth",
-        });
+      const embed = buildSaleEmbed({
+        data: {
+          product_name: "Test product",
+          quantity: 1,
+          total: 1.5,
+          currency: "EUR",
+          usd_amount: 1.62,
+          gateway: "litecoin",
+          status: "completed",
+          email: "test.user@proton.me",
+          id: "16993140",
+        },
+      });
 
       await sendToChannel(SALES_CHANNEL_ID, {
         embeds: [embed],
