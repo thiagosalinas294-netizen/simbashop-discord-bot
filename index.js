@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -762,11 +761,211 @@ async function registerCommands() {
 }
 
 // --------------------------------------------------
+// STOCK POLLING (Shoppex API)
+// Shoppex does not send a webhook when keys are uploaded,
+// so the bot checks the stock by itself every few seconds.
+// --------------------------------------------------
+
+const POLL_SECONDS = Number(process.env.SHOPPEX_POLL_SECONDS || 60);
+const stockCache = new Map();
+let pollRunning = false;
+let firstPollDone = false;
+
+function shoppexGet(path) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      {
+        hostname: "api.shoppex.io",
+        path,
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${SHOPPEX_API_KEY}`,
+          Accept: "application/json",
+        },
+        timeout: 15000,
+      },
+      response => {
+        let body = "";
+
+        response.setEncoding("utf8");
+        response.on("data", chunk => body += chunk);
+
+        response.on("end", () => {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
+            return reject(new Error(
+              `Shoppex API HTTP ${response.statusCode} on ${path.split("?")[0]}`
+            ));
+          }
+
+          try {
+            resolve(JSON.parse(body));
+          } catch {
+            reject(new Error("Shoppex API returned invalid JSON"));
+          }
+        });
+      }
+    );
+
+    request.on("timeout", () =>
+      request.destroy(new Error("Shoppex API timeout"))
+    );
+
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function fetchAllProducts() {
+  const products = [];
+  let cursor = null;
+
+  for (let page = 0; page < 20; page++) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (cursor) query.set("cursor", cursor);
+
+    const result = await shoppexGet(`/dev/v1/products?${query}`);
+    const list = Array.isArray(result?.data) ? result.data : [];
+
+    products.push(...list);
+
+    if (
+      !result?.pagination?.has_more ||
+      !result?.pagination?.next_cursor
+    ) {
+      break;
+    }
+
+    cursor = result.pagination.next_cursor;
+  }
+
+  return products;
+}
+
+async function checkStock() {
+  if (pollRunning) return;
+  pollRunning = true;
+
+  try {
+    const products = await fetchAllProducts();
+
+    for (const product of products) {
+      const productId = product.uniqid || product.id;
+      if (!productId) continue;
+
+      let info;
+
+      try {
+        const result = await shoppexGet(
+          `/dev/v1/products/${encodeURIComponent(productId)}/stock`
+        );
+
+        info = result?.data || result;
+      } catch (error) {
+        console.error(
+          "[STOCK] Could not read stock:",
+          productId,
+          error.message
+        );
+        continue;
+      }
+
+      const variants = Array.isArray(info?.variants)
+        ? info.variants
+        : [];
+
+      const entries = variants.length
+        ? variants.map(v => ({
+            key: `${productId}:${v.id || v.uniqid}`,
+            stock: v.available_stock ?? v.stock,
+            unlimited: v.unlimited,
+            variantTitle: v.title,
+          }))
+        : [{
+            key: productId,
+            stock: info?.available_stock ?? info?.stock,
+            unlimited: info?.unlimited,
+            variantTitle: null,
+          }];
+
+      for (const entry of entries) {
+        if (entry.unlimited) continue;
+
+        const current = Number(entry.stock);
+        if (!Number.isFinite(current)) continue;
+
+        const previous = stockCache.get(entry.key);
+        stockCache.set(entry.key, current);
+
+        if (
+          firstPollDone &&
+          previous !== undefined &&
+          current > previous
+        ) {
+          const name =
+            product.title ||
+            product.name ||
+            "Digital product";
+
+          console.log(
+            `[STOCK] ${name} ${entry.variantTitle || ""}: ${previous} -> ${current}`
+          );
+
+          await sendToChannel(
+            RESTOCK_CHANNEL_ID,
+            buildRestockMessage({
+              event: "product:stock",
+              data: {
+                product_title: name,
+                variant_title: entry.variantTitle,
+                stock: current,
+                price: product.price,
+                currency: product.currency,
+                product,
+              },
+            })
+          );
+
+          console.log("[STOCK] Restock notification sent.");
+        }
+      }
+    }
+
+    if (!firstPollDone) {
+      console.log(
+        `[STOCK] Baseline saved for ${stockCache.size} items.`
+      );
+    }
+
+    firstPollDone = true;
+  } catch (error) {
+    console.error("[STOCK] Polling error:", error.message);
+  } finally {
+    pollRunning = false;
+  }
+}
+
+function startStockPolling() {
+  if (!SHOPPEX_API_KEY) {
+    console.error("[STOCK] SHOPPEX_API_KEY is missing, polling disabled.");
+    return;
+  }
+
+  console.log(`[STOCK] Polling every ${POLL_SECONDS} seconds.`);
+
+  checkStock();
+  setInterval(checkStock, POLL_SECONDS * 1000);
+}
+
+// --------------------------------------------------
 // DISCORD EVENTS
 // --------------------------------------------------
 
 client.once("clientReady", () => {
   console.log(`SIMBA SHOP online as ${client.user.tag}`);
+  startStockPolling();
 });
 
 client.on("interactionCreate", async interaction => {
@@ -882,46 +1081,7 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      const result = await new Promise((resolve, reject) => {
-        const request = https.request(
-          {
-            hostname: "api.shoppex.io",
-            path: "/dev/v1/me",
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${SHOPPEX_API_KEY}`,
-              Accept: "application/json",
-            },
-            timeout: 15000,
-          },
-          response => {
-            let body = "";
-
-            response.setEncoding("utf8");
-            response.on("data", chunk => body += chunk);
-
-            response.on("end", () => {
-              if (
-                response.statusCode < 200 ||
-                response.statusCode >= 300
-              ) {
-                return reject(
-                  new Error(`Shoppex API HTTP ${response.statusCode}`)
-                );
-              }
-
-              resolve(body);
-            });
-          }
-        );
-
-        request.on("timeout", () =>
-          request.destroy(new Error("Shoppex API timeout"))
-        );
-
-        request.on("error", reject);
-        request.end();
-      });
+      await shoppexGet("/dev/v1/me");
 
       console.log("[SHOPPEX] API connection successful.");
 
