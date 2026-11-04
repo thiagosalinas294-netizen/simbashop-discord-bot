@@ -46,7 +46,7 @@ const client = new Client({
 // --------------------------------------------------
 
 app.use((req, res, next) => {
-  if (req.path === "/webhooks/shoppex") {
+  if (req.path.startsWith("/webhooks/shoppex")) {
     console.log("--------------------------------");
     console.log("[SHOPPEX] Incoming request");
     console.log("[SHOPPEX] Method:", req.method);
@@ -529,6 +529,37 @@ function verifyShoppexWebhook(req) {
 }
 
 // --------------------------------------------------
+// NEW SHOPPEX TEST ENDPOINT
+// --------------------------------------------------
+
+app.post("/webhooks/shoppex-test", (req, res) => {
+  console.log("[SHOPPEX TEST] Endpoint reached.");
+
+  if (!verifyShoppexWebhook(req)) {
+    console.warn("[SHOPPEX TEST] Invalid signature.");
+
+    return res.status(401).json({
+      error: "Invalid webhook signature",
+    });
+  }
+
+  const event = String(
+    req.headers["x-shoppex-event"] ||
+    req.body?.event ||
+    ""
+  ).trim().toLowerCase();
+
+  console.log("[SHOPPEX TEST] Signature verified.");
+  console.log("[SHOPPEX TEST] Event:", event || "No event");
+  console.log("[SHOPPEX TEST] Payload keys:", Object.keys(req.body || {}));
+
+  return res.status(200).json({
+    received: true,
+    endpoint: "shoppex-test",
+  });
+});
+
+// --------------------------------------------------
 // WEBHOOK DEDUPLICATION
 // --------------------------------------------------
 
@@ -595,7 +626,7 @@ async function processWebhook(event, payload) {
 }
 
 // --------------------------------------------------
-// SHOPPEX WEBHOOK ENDPOINT
+// ORIGINAL SHOPPEX WEBHOOK ENDPOINT
 // --------------------------------------------------
 
 app.post("/webhooks/shoppex", async (req, res) => {
@@ -656,7 +687,7 @@ app.post("/webhooks/shoppex", async (req, res) => {
 // --------------------------------------------------
 
 app.use((error, req, res, next) => {
-  if (req.path === "/webhooks/shoppex") {
+  if (req.path.startsWith("/webhooks/shoppex")) {
     console.error("[SHOPPEX] JSON parsing error:", error.message);
 
     return res.status(400).json({
