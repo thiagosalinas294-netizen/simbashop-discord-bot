@@ -40,7 +40,30 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-// Preserve raw request body for HMAC verification.
+// --------------------------------------------------
+// WEBHOOK REQUEST DIAGNOSTICS
+// Must run BEFORE express.json()
+// --------------------------------------------------
+
+app.use((req, res, next) => {
+  if (req.path === "/webhooks/shoppex") {
+    console.log("--------------------------------");
+    console.log("[SHOPPEX] Incoming request");
+    console.log("[SHOPPEX] Method:", req.method);
+    console.log("[SHOPPEX] Path:", req.path);
+    console.log("[SHOPPEX] Event header:", req.headers["x-shoppex-event"] || "Missing");
+    console.log("[SHOPPEX] Delivery ID:", req.headers["x-shoppex-delivery"] || "Missing");
+    console.log("[SHOPPEX] Timestamp:", req.headers["x-shoppex-timestamp"] || "Missing");
+    console.log("[SHOPPEX] Content-Type:", req.headers["content-type"] || "Missing");
+  }
+
+  next();
+});
+
+// --------------------------------------------------
+// JSON PARSER
+// --------------------------------------------------
+
 app.use(express.json({
   limit: "1mb",
   verify: (req, res, buffer) => {
@@ -53,10 +76,10 @@ app.use(express.json({
 // --------------------------------------------------
 
 function firstDefined(...values) {
-  return values.find(
-    value => value !== undefined &&
-      value !== null &&
-      value !== ""
+  return values.find(value =>
+    value !== undefined &&
+    value !== null &&
+    value !== ""
   );
 }
 
@@ -118,25 +141,10 @@ function getProduct(payload) {
     {};
 }
 
-function getProductId(payload) {
-  const data = getData(payload);
-  const product = getProduct(payload);
-
-  return firstDefined(
-    data.product_id,
-    data.productId,
-    data.product_uniqid,
-    data.uniqid,
-    data.id,
-    product.uniqid,
-    product.id,
-    payload?.product_id
-  );
-}
-
 function getProductName(payload) {
   const data = getData(payload);
   const product = getProduct(payload);
+  const variant = data?.variant || {};
 
   return firstDefined(
     data.product_title,
@@ -146,6 +154,7 @@ function getProductName(payload) {
     data.name,
     product.title,
     product.name,
+    variant.product_title,
     payload?.product_title,
     "Digital product"
   );
@@ -154,7 +163,7 @@ function getProductName(payload) {
 function getStock(payload) {
   const data = getData(payload);
   const product = getProduct(payload);
-  const variant = data.variant || {};
+  const variant = data?.variant || {};
 
   return firstDefined(
     data.stock,
@@ -165,6 +174,9 @@ function getStock(payload) {
     data.available_stock,
     data.available,
     data.inventory,
+    data.total_stock,
+    data.keys_count,
+    data.key_count,
     variant.stock,
     variant.stock_quantity,
     variant.quantity,
@@ -172,6 +184,8 @@ function getStock(payload) {
     product.stock_quantity,
     product.quantity,
     product.inventory,
+    product.keys_count,
+    product.key_count,
     payload?.stock,
     payload?.stock_quantity
   );
@@ -357,9 +371,9 @@ function buildSaleEmbed(payload) {
 function buildRestockMessage(payload) {
   const data = getData(payload);
   const product = getProduct(payload);
+  const variant = data.variant || {};
 
   const productName = getProductName(payload);
-  const variant = data.variant || {};
 
   const variantName = firstDefined(
     data.variant_title,
@@ -434,7 +448,7 @@ function buildRestockMessage(payload) {
 
 function verifyShoppexWebhook(req) {
   if (!SHOPPEX_WEBHOOK_SECRET) {
-    console.error("SHOPPEX_WEBHOOK_SECRET is missing");
+    console.error("[SHOPPEX] WEBHOOK SECRET IS MISSING");
     return false;
   }
 
@@ -451,7 +465,7 @@ function verifyShoppexWebhook(req) {
       !deliveryId ||
       !timestampHeader ||
       !req.rawBody) {
-    console.error("Missing Shoppex signature headers");
+    console.error("[SHOPPEX] Missing signature headers or raw body");
     return false;
   }
 
@@ -459,7 +473,10 @@ function verifyShoppexWebhook(req) {
     .split(",")
     .map(part => part.trim());
 
-  if (!parts.includes("v1")) return false;
+  if (!parts.includes("v1")) {
+    console.error("[SHOPPEX] Unsupported signature version");
+    return false;
+  }
 
   const fields = {};
 
@@ -477,6 +494,7 @@ function verifyShoppexWebhook(req) {
       !signature ||
       timestamp !== String(timestampHeader) ||
       !/^[0-9a-f]{64}$/i.test(signature)) {
+    console.error("[SHOPPEX] Invalid signature format");
     return false;
   }
 
@@ -484,7 +502,10 @@ function verifyShoppexWebhook(req) {
     Math.floor(Date.now() / 1000) - Number(timestamp)
   );
 
-  if (age > 300) return false;
+  if (!Number.isFinite(age) || age > 300) {
+    console.error("[SHOPPEX] Webhook timestamp expired");
+    return false;
+  }
 
   const expected = crypto
     .createHmac("sha256", SHOPPEX_WEBHOOK_SECRET)
@@ -494,8 +515,17 @@ function verifyShoppexWebhook(req) {
 
   const received = Buffer.from(signature, "hex");
 
-  return received.length === expected.length &&
+  const valid =
+    received.length === expected.length &&
     crypto.timingSafeEqual(received, expected);
+
+  if (!valid) {
+    console.error("[SHOPPEX] HMAC verification failed");
+  } else {
+    console.log("[SHOPPEX] Signature verified successfully");
+  }
+
+  return valid;
 }
 
 // --------------------------------------------------
@@ -518,12 +548,14 @@ function rememberDelivery(id) {
 // --------------------------------------------------
 
 async function processWebhook(event, payload) {
-  console.log("--------------------------------");
   console.log("[SHOPPEX] Event received:", event);
   console.log("[SHOPPEX] Payload keys:", Object.keys(payload || {}));
+
+  const data = getData(payload);
+
   console.log(
     "[SHOPPEX] Data keys:",
-    Object.keys(getData(payload) || {})
+    Object.keys(data || {})
   );
 
   // SALE
@@ -548,11 +580,8 @@ async function processWebhook(event, payload) {
   ) {
     console.log("[SHOPPEX] Processing stock event...");
 
-    const stock = getStock(payload);
-    const productName = getProductName(payload);
-
-    console.log("[SHOPPEX] Product:", productName);
-    console.log("[SHOPPEX] Stock:", stock);
+    console.log("[SHOPPEX] Product:", getProductName(payload));
+    console.log("[SHOPPEX] Stock:", getStock(payload));
 
     const message = buildRestockMessage(payload);
 
@@ -562,7 +591,7 @@ async function processWebhook(event, payload) {
     return;
   }
 
-  console.log("[SHOPPEX] Event ignored:", event);
+  console.log("[SHOPPEX] Event ignored:", event || "EMPTY EVENT");
 }
 
 // --------------------------------------------------
@@ -570,7 +599,7 @@ async function processWebhook(event, payload) {
 // --------------------------------------------------
 
 app.post("/webhooks/shoppex", async (req, res) => {
-  console.log("[SHOPPEX] Webhook request received.");
+  console.log("[SHOPPEX] POST endpoint reached.");
 
   if (!verifyShoppexWebhook(req)) {
     console.warn("[SHOPPEX] Invalid signature.");
@@ -600,17 +629,17 @@ app.post("/webhooks/shoppex", async (req, res) => {
     ""
   ).trim().toLowerCase();
 
-  rememberDelivery(deliveryId);
+  console.log("[SHOPPEX] Verified event:", event);
 
   try {
     await processWebhook(event, payload);
+
+    rememberDelivery(deliveryId);
 
     return res.status(200).json({
       received: true,
     });
   } catch (error) {
-    processedDeliveries.delete(deliveryId);
-
     console.error(
       "[SHOPPEX] Webhook processing error:",
       error
@@ -620,6 +649,26 @@ app.post("/webhooks/shoppex", async (req, res) => {
       error: "Webhook processing failed",
     });
   }
+});
+
+// --------------------------------------------------
+// JSON PARSER ERROR HANDLER
+// --------------------------------------------------
+
+app.use((error, req, res, next) => {
+  if (req.path === "/webhooks/shoppex") {
+    console.error("[SHOPPEX] JSON parsing error:", error.message);
+
+    return res.status(400).json({
+      error: "Invalid JSON body",
+    });
+  }
+
+  console.error("[SERVER] Request error:", error.message);
+
+  return res.status(400).json({
+    error: "Bad request",
+  });
 });
 
 // --------------------------------------------------
