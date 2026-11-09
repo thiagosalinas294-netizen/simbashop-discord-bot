@@ -31,17 +31,15 @@ const {
   SAY_ALLOWED_USER_ID,
   SALES_CHANNEL_ID,
   RESTOCK_CHANNEL_ID,
+  UPDATES_CHANNEL_ID,
   SHOPPEX_API_KEY,
   SHOPPEX_WEBHOOK_SECRET,
   STOCK_ROLE_ID,
 } = process.env;
 
-const STORE_URL =
-  process.env.STORE_URL || "https://shoppex.io";
-
+const STORE_URL = process.env.STORE_URL || "https://shoppex.io";
 const GOLD = 0xd4af37;
-const STOCK_ROLE =
-  STOCK_ROLE_ID || "1550639490123694100";
+const STOCK_ROLE = STOCK_ROLE_ID || "1550639490123694100";
 
 const POLL_SECONDS = Math.max(
   30,
@@ -58,25 +56,12 @@ const client = new Client({
 
 app.use((req, res, next) => {
   if (req.path.startsWith("/webhooks/shoppex")) {
-    console.log("\n================================");
-    console.log("[SHOPPEX] Incoming request");
+    console.log("\n[SHOPPEX] Incoming request");
     console.log("[SHOPPEX] Method:", req.method);
     console.log("[SHOPPEX] Path:", req.path);
-    console.log(
-      "[SHOPPEX] Event:",
-      req.headers["x-shoppex-event"] || "Missing"
-    );
-    console.log(
-      "[SHOPPEX] Delivery:",
-      req.headers["x-shoppex-delivery"] || "Missing"
-    );
-    console.log(
-      "[SHOPPEX] Timestamp:",
-      req.headers["x-shoppex-timestamp"] || "Missing"
-    );
-    console.log("================================");
+    console.log("[SHOPPEX] Event:", req.headers["x-shoppex-event"] || "Missing");
+    console.log("[SHOPPEX] Delivery:", req.headers["x-shoppex-delivery"] || "Missing");
   }
-
   next();
 });
 
@@ -104,22 +89,25 @@ function firstDefined(...values) {
 }
 
 function getData(payload) {
-  return (
-    payload?.data ||
-    payload?.payload ||
-    payload ||
-    {}
-  );
+  return payload?.data || payload?.payload || payload || {};
 }
 
 function getProduct(payload) {
   const data = getData(payload);
+  return data?.product || data?.variant?.product || payload?.product || {};
+}
 
-  return (
-    data?.product ||
-    data?.variant?.product ||
-    payload?.product ||
-    {}
+function getProductId(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+
+  return firstDefined(
+    data.product_uniqid,
+    data.product_id,
+    product.uniqid,
+    product.id,
+    data.uniqid,
+    data.id
   );
 }
 
@@ -189,19 +177,12 @@ function getImage(payload) {
     product.images?.[0]
   );
 
-  if (
-    typeof image === "string" &&
-    /^https?:\/\/\S+$/i.test(image)
-  ) {
+  if (typeof image === "string" && /^https?:\/\/\S+$/i.test(image)) {
     return image;
   }
 
   if (image && typeof image === "object") {
-    return firstDefined(
-      image.url,
-      image.src,
-      image.href
-    );
+    return firstDefined(image.url, image.src, image.href);
   }
 
   return null;
@@ -219,25 +200,16 @@ function getProductUrl(payload) {
     STORE_URL
   );
 
-  return /^https?:\/\//i.test(String(url))
-    ? String(url)
-    : STORE_URL;
+  return /^https?:\/\//i.test(String(url)) ? String(url) : STORE_URL;
 }
 
 function money(value, currency = "EUR") {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
+  if (value === undefined || value === null || value === "") {
     return "Not available";
   }
 
   const number = Number(value);
-
-  const formatted = Number.isFinite(number)
-    ? number.toFixed(2)
-    : String(value);
+  const formatted = Number.isFinite(number) ? number.toFixed(2) : String(value);
 
   const symbols = {
     EUR: "€",
@@ -248,9 +220,7 @@ function money(value, currency = "EUR") {
 
   const code = String(currency || "EUR").toUpperCase();
 
-  return symbols[code]
-    ? `${symbols[code]}${formatted}`
-    : `${formatted} ${code}`;
+  return symbols[code] ? `${symbols[code]}${formatted}` : `${formatted} ${code}`;
 }
 
 function maskEmail(email) {
@@ -258,18 +228,12 @@ function maskEmail(email) {
   const at = value.indexOf("@");
 
   if (at <= 0) return value;
-
   return value.slice(0, 2) + "·····" + value.slice(at);
 }
 
 function prettyText(value) {
-  const text = String(value || "")
-    .replace(/[_-]+/g, " ")
-    .trim();
-
-  return text
-    ? text.charAt(0).toUpperCase() + text.slice(1)
-    : "Not available";
+  const text = String(value || "").replace(/[_-]+/g, " ").trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Not available";
 }
 
 // ================================================
@@ -277,17 +241,11 @@ function prettyText(value) {
 // ================================================
 
 async function sendToChannel(channelId, message) {
-  if (!channelId) {
-    throw new Error("Channel ID is missing");
-  }
+  if (!channelId) throw new Error("Channel ID is missing");
 
   const channel = await client.channels.fetch(channelId);
 
-  if (
-    !channel ||
-    !channel.isTextBased() ||
-    !channel.send
-  ) {
+  if (!channel || !channel.isTextBased() || !channel.send) {
     throw new Error("Invalid Discord text channel");
   }
 
@@ -301,23 +259,14 @@ async function sendToChannel(channelId, message) {
 function buildSaleEmbed(payload) {
   const data = getData(payload);
 
-  const items = Array.isArray(data.line_items)
-    ? data.line_items
-    : [];
+  const items = Array.isArray(data.line_items) ? data.line_items : [];
 
   const productNames = items.length
     ? items.map(item => {
-        const name =
-          item.product_title ||
-          item.product_name ||
-          item.title ||
-          "Digital product";
-
+        const name = item.product_title || item.product_name || item.title || "Digital product";
         return `${name} ×${item.quantity || 1}`;
       })
-    : [
-        `${getProductName(payload)} ×${data.quantity || 1}`
-      ];
+    : [`${getProductName(payload)} ×${data.quantity || 1}`];
 
   const total = firstDefined(
     data.total_display,
@@ -351,34 +300,20 @@ function buildSaleEmbed(payload) {
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setAuthor({
-      name: "SIMBA SHOP · New Sale",
-    })
+    .setAuthor({ name: "SIMBA SHOP · New Sale" })
     .setTitle("New order completed!")
     .setURL(STORE_URL)
     .setDescription(
       "**New sale completed!**\n" +
       "───────────────────────\n\n" +
-      productNames
-        .map(name => `🏷️ **${name}**`)
-        .join("\n")
+      productNames.map(name => `🏷️ **${name}**`).join("\n")
     )
     .addFields(
-      {
-        name: "Amount",
-        value: `\`${money(total, currency)}\``,
-        inline: true,
-      },
-      {
-        name: "Status",
-        value: "`Completed`",
-        inline: true,
-      }
+      { name: "Amount", value: `\`${money(total, currency)}\``, inline: true },
+      { name: "Status", value: "`Completed`", inline: true }
     )
     .setTimestamp()
-    .setFooter({
-      text: "SIMBA SHOP · Shoppex",
-    });
+    .setFooter({ text: "SIMBA SHOP · Shoppex" });
 
   if (method) {
     embed.addFields({
@@ -425,43 +360,27 @@ function buildRestockMessage(payload) {
     variant.name
   );
 
-  const fullName = variantName
-    ? `${productName} - ${variantName}`
-    : productName;
+  const fullName = variantName ? `${productName} - ${variantName}` : productName;
 
-  const price = firstDefined(
-    data.price,
-    variant.price,
-    product.price
-  );
-
-  const currency = firstDefined(
-    data.currency,
-    variant.currency,
-    product.currency,
-    "EUR"
-  );
-
+  const price = firstDefined(data.price, variant.price, product.price);
+  const currency = firstDefined(data.currency, variant.currency, product.currency, "EUR");
   const stock = getStock(payload);
   const image = getImage(payload);
   const productUrl = getProductUrl(payload);
-
-  const description =
-    `**Service:** ${fullName}\n` +
-    `**Available stock:** ${stock ?? "Updated"} units\n` +
-    `**Price:** ${money(price, currency)}\n\n` +
-    "**Information**\n" +
-    "We have recently restocked this product!";
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setTitle(`${fullName} - RESTOCKED`.slice(0, 256))
     .setURL(productUrl)
-    .setDescription(description)
+    .setDescription(
+      `**Service:** ${fullName}\n` +
+      `**Available stock:** ${stock ?? "Updated"} units\n` +
+      `**Price:** ${money(price, currency)}\n\n` +
+      "**Information**\n" +
+      "We have recently restocked this product!"
+    )
     .setTimestamp()
-    .setFooter({
-      text: "SIMBA SHOP · Shoppex",
-    });
+    .setFooter({ text: "SIMBA SHOP · Shoppex" });
 
   if (image && /^https?:\/\//i.test(image)) {
     embed.setImage(image);
@@ -472,16 +391,66 @@ function buildRestockMessage(payload) {
     .setStyle(ButtonStyle.Link)
     .setURL(productUrl);
 
-  const row = new ActionRowBuilder()
-    .addComponents(button);
-
   return {
     content: `<@&${STOCK_ROLE}>`,
     embeds: [embed],
-    components: [row],
-    allowedMentions: {
-      roles: [STOCK_ROLE],
-    },
+    components: [new ActionRowBuilder().addComponents(button)],
+    allowedMentions: { roles: [STOCK_ROLE] },
+  };
+}
+
+// ================================================
+// PRICE UPDATE EMBED
+// ================================================
+
+function buildPriceUpdateMessage(product, oldPrice, newPrice) {
+  const currency = product.currency || "EUR";
+  const name = product.title || product.name || "Digital product";
+  const image = getImage({ data: { product } });
+  const url = getProductUrl({ data: { product } });
+
+  const oldNumber = Number(oldPrice);
+  const newNumber = Number(newPrice);
+
+  const difference = newNumber - oldNumber;
+  const percentage = oldNumber !== 0
+    ? (difference / oldNumber) * 100
+    : null;
+
+  const increased = difference > 0;
+  const direction = increased ? "PRICE INCREASED" : "PRICE REDUCED";
+  const emoji = increased ? "📈" : "📉";
+  const percentageText = percentage === null
+    ? "N/A"
+    : `${Math.abs(percentage).toFixed(2)}%`;
+
+  const embed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setAuthor({ name: "SIMBA SHOP · PRICE UPDATE" })
+    .setTitle(`${emoji} ${direction}`)
+    .setURL(url)
+    .setDescription(
+      `**${name}**\n` +
+      "───────────────────────\n\n" +
+      `**Previous price:** ~~${money(oldPrice, currency)}~~\n` +
+      `**New price:** **${money(newPrice, currency)}**\n\n` +
+      `**Change:** ${increased ? "+" : "-"}${money(Math.abs(difference), currency)} (${percentageText})`
+    )
+    .setTimestamp()
+    .setFooter({ text: "SIMBA SHOP · Shoppex" });
+
+  if (image && /^https?:\/\//i.test(image)) {
+    embed.setThumbnail(image);
+  }
+
+  const button = new ButtonBuilder()
+    .setLabel("Buy Now")
+    .setStyle(ButtonStyle.Link)
+    .setURL(url);
+
+  return {
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(button)],
   };
 }
 
@@ -495,21 +464,11 @@ function verifyShoppexWebhook(req) {
     return false;
   }
 
-  const signatureHeader =
-    req.headers["x-shoppex-signature-v2"];
+  const signatureHeader = req.headers["x-shoppex-signature-v2"];
+  const deliveryId = req.headers["x-shoppex-delivery"];
+  const timestampHeader = req.headers["x-shoppex-timestamp"];
 
-  const deliveryId =
-    req.headers["x-shoppex-delivery"];
-
-  const timestampHeader =
-    req.headers["x-shoppex-timestamp"];
-
-  if (
-    !signatureHeader ||
-    !deliveryId ||
-    !timestampHeader ||
-    !req.rawBody
-  ) {
+  if (!signatureHeader || !deliveryId || !timestampHeader || !req.rawBody) {
     console.error("[SHOPPEX] Missing signature data");
     return false;
   }
@@ -518,10 +477,7 @@ function verifyShoppexWebhook(req) {
 
   for (const part of signatureHeader.split(",")) {
     const [key, ...rest] = part.trim().split("=");
-
-    if (key && rest.length) {
-      fields[key] = rest.join("=");
-    }
+    if (key && rest.length) fields[key] = rest.join("=");
   }
 
   const timestamp = fields.t;
@@ -537,30 +493,14 @@ function verifyShoppexWebhook(req) {
     return false;
   }
 
-  const age = Math.abs(
-    Math.floor(Date.now() / 1000) -
-    Number(timestamp)
-  );
+  const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
 
   if (!Number.isFinite(age) || age > 300) {
     console.error("[SHOPPEX] Expired timestamp");
     return false;
   }
 
-  // IMPORTANT:
-  // Shoppex signs deliveryId.timestamp.rawBody
-  // There is NO extra period after timestamp.
-
   const expected = crypto
-    .createHmac("sha256", SHOPPEX_WEBHOOK_SECRET)
-    .update(`${deliveryId}.${timestamp}.`, "utf8")
-    .update(req.rawBody)
-    .digest();
-
-  // The signature base is deliveryId.timestamp + raw body.
-  // Build the documented input without an extra separator.
-
-  const correctExpected = crypto
     .createHmac("sha256", SHOPPEX_WEBHOOK_SECRET)
     .update(`${deliveryId}.${timestamp}`, "utf8")
     .update(req.rawBody)
@@ -569,8 +509,8 @@ function verifyShoppexWebhook(req) {
   const received = Buffer.from(signature, "hex");
 
   const valid =
-    received.length === correctExpected.length &&
-    crypto.timingSafeEqual(received, correctExpected);
+    received.length === expected.length &&
+    crypto.timingSafeEqual(received, expected);
 
   if (valid) {
     console.log("[SHOPPEX] Signature verified.");
@@ -597,7 +537,7 @@ function rememberDelivery(id) {
 }
 
 // ================================================
-// UPDATE STOCK CACHE FROM WEBHOOK
+// STOCK CACHE
 // ================================================
 
 const stockCache = new Map();
@@ -605,13 +545,7 @@ const stockCache = new Map();
 function updateCacheFromWebhook(payload) {
   const data = getData(payload);
   const product = getProduct(payload);
-
-  const productId = firstDefined(
-    data.product_uniqid,
-    data.product_id,
-    product.uniqid,
-    product.id
-  );
+  const productId = getProductId(payload);
 
   const variants = Array.isArray(data.variants)
     ? data.variants
@@ -622,12 +556,7 @@ function updateCacheFromWebhook(payload) {
   if (productId && variants.length) {
     for (const variant of variants) {
       const id = variant.id || variant.uniqid || "default";
-      const stock = Number(
-        firstDefined(
-          variant.available_stock,
-          variant.stock
-        )
-      );
+      const stock = Number(firstDefined(variant.available_stock, variant.stock));
 
       if (Number.isFinite(stock)) {
         stockCache.set(`${productId}:${id}`, stock);
@@ -637,10 +566,64 @@ function updateCacheFromWebhook(payload) {
 
   if (productId) {
     const stock = Number(getStock(payload));
+    if (Number.isFinite(stock)) stockCache.set(String(productId), stock);
+  }
+}
 
-    if (Number.isFinite(stock)) {
-      stockCache.set(String(productId), stock);
+// ================================================
+// PRICE CACHE
+// ================================================
+
+const priceCache = new Map();
+let priceBaselineDone = false;
+
+function getProductPrice(product) {
+  return firstDefined(
+    product.price,
+    product.display_price,
+    product.amount,
+    product.pricing?.price
+  );
+}
+
+async function checkProductPrices(products) {
+  for (const product of products) {
+    const id = product.uniqid || product.id;
+    if (!id) continue;
+
+    const price = getProductPrice(product);
+    if (price === undefined || price === null || price === "") continue;
+
+    const currentPrice = Number(price);
+    if (!Number.isFinite(currentPrice)) continue;
+
+    const key = String(id);
+    const previousPrice = priceCache.get(key);
+
+    priceCache.set(key, currentPrice);
+
+    // First scan creates the baseline; it does not send notifications.
+    if (!priceBaselineDone || previousPrice === undefined) continue;
+
+    if (currentPrice !== previousPrice) {
+      console.log(`[PRICE] ${product.title || product.name}: ${previousPrice} -> ${currentPrice}`);
+
+      try {
+        await sendToChannel(
+          UPDATES_CHANNEL_ID,
+          buildPriceUpdateMessage(product, previousPrice, currentPrice)
+        );
+
+        console.log("[PRICE] Price update notification sent.");
+      } catch (error) {
+        console.error("[PRICE] Discord delivery error:", error.message);
+      }
     }
+  }
+
+  if (!priceBaselineDone) {
+    priceBaselineDone = true;
+    console.log(`[PRICE] Baseline saved for ${priceCache.size} products.`);
   }
 }
 
@@ -653,21 +636,10 @@ async function processWebhook(event, payload) {
 
   const data = getData(payload);
 
-  console.log(
-    "[SHOPPEX] Payload keys:",
-    Object.keys(payload || {})
-  );
+  console.log("[SHOPPEX] Payload keys:", Object.keys(payload || {}));
+  console.log("[SHOPPEX] Data keys:", Object.keys(data || {}));
 
-  console.log(
-    "[SHOPPEX] Data keys:",
-    Object.keys(data || {})
-  );
-
-  // PAID ORDERS
-  if (
-    event === "order:paid" ||
-    event === "order:paid:product"
-  ) {
+  if (event === "order:paid" || event === "order:paid:product") {
     console.log("[SHOPPEX] Paid order detected.");
 
     await sendToChannel(SALES_CHANNEL_ID, {
@@ -678,30 +650,35 @@ async function processWebhook(event, payload) {
     return;
   }
 
-  // PRODUCT STOCK
   if (
     event === "product:stock" ||
     event.includes("restock") ||
     event.includes("stock")
   ) {
     console.log("[SHOPPEX] Stock update detected.");
-    console.log(
-      "[SHOPPEX] Product:",
-      getProductName(payload)
-    );
-    console.log(
-      "[SHOPPEX] Stock:",
-      getStock(payload)
-    );
+    console.log("[SHOPPEX] Product:", getProductName(payload));
+    console.log("[SHOPPEX] Stock:", getStock(payload));
 
     updateCacheFromWebhook(payload);
 
-    await sendToChannel(
-      RESTOCK_CHANNEL_ID,
-      buildRestockMessage(payload)
-    );
+    await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
 
     console.log("[SHOPPEX] Restock notification sent.");
+    return;
+  }
+
+  if (event === "product:edited") {
+    console.log("[SHOPPEX] Product edited detected:", getProductName(payload));
+
+    // The API scan compares the current catalog against the saved prices.
+    // If the price changed, the update message is sent to #updates.
+    await checkStock();
+    return;
+  }
+
+  if (event === "product:created") {
+    console.log("[SHOPPEX] New product created:", getProductName(payload));
+    await checkStock();
     return;
   }
 
@@ -722,8 +699,7 @@ app.post("/webhooks/shoppex", async (req, res) => {
     });
   }
 
-  const deliveryId =
-    String(req.headers["x-shoppex-delivery"]);
+  const deliveryId = String(req.headers["x-shoppex-delivery"]);
 
   if (processedDeliveries.has(deliveryId)) {
     console.log("[SHOPPEX] Duplicate delivery:", deliveryId);
@@ -748,7 +724,6 @@ app.post("/webhooks/shoppex", async (req, res) => {
 
   try {
     await processWebhook(event, payload);
-
     rememberDelivery(deliveryId);
 
     return res.status(200).json({
@@ -756,10 +731,7 @@ app.post("/webhooks/shoppex", async (req, res) => {
       event,
     });
   } catch (error) {
-    console.error(
-      "[SHOPPEX] Processing error:",
-      error
-    );
+    console.error("[SHOPPEX] Processing error:", error);
 
     return res.status(500).json({
       received: false,
@@ -769,7 +741,7 @@ app.post("/webhooks/shoppex", async (req, res) => {
 });
 
 // ================================================
-// API REQUEST
+// SHOPPEX API REQUEST
 // ================================================
 
 function shoppexGet(path) {
@@ -793,40 +765,26 @@ function shoppexGet(path) {
         let body = "";
 
         response.setEncoding("utf8");
-
-        response.on("data", chunk => {
-          body += chunk;
-        });
+        response.on("data", chunk => body += chunk);
 
         response.on("end", () => {
-          if (
-            response.statusCode < 200 ||
-            response.statusCode >= 300
-          ) {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
             return reject(
-              new Error(
-                `Shoppex API HTTP ${response.statusCode}: ${body.slice(0, 300)}`
-              )
+              new Error(`Shoppex API HTTP ${response.statusCode}: ${body.slice(0, 300)}`)
             );
           }
 
           try {
             resolve(JSON.parse(body));
           } catch {
-            reject(
-              new Error("Shoppex API returned invalid JSON")
-            );
+            reject(new Error("Shoppex API returned invalid JSON"));
           }
         });
       }
     );
 
-    request.on("timeout", () => {
-      request.destroy(new Error("Shoppex API timeout"));
-    });
-
+    request.on("timeout", () => request.destroy(new Error("Shoppex API timeout")));
     request.on("error", reject);
-
     request.end();
   });
 }
@@ -840,18 +798,11 @@ async function fetchAllProducts() {
   let cursor = null;
 
   for (let page = 0; page < 20; page++) {
-    const query = new URLSearchParams({
-      limit: "100",
-    });
+    const query = new URLSearchParams({ limit: "100" });
 
-    if (cursor) {
-      query.set("cursor", cursor);
-    }
+    if (cursor) query.set("cursor", cursor);
 
-    const result = await shoppexGet(
-      `/dev/v1/products?${query.toString()}`
-    );
-
+    const result = await shoppexGet(`/dev/v1/products?${query.toString()}`);
     const data = result?.data;
 
     const list = Array.isArray(data)
@@ -862,16 +813,9 @@ async function fetchAllProducts() {
 
     products.push(...list);
 
-    const pagination = result?.pagination ||
-      data?.pagination ||
-      {};
+    const pagination = result?.pagination || data?.pagination || {};
 
-    if (
-      !pagination.has_more ||
-      !pagination.next_cursor
-    ) {
-      break;
-    }
+    if (!pagination.has_more || !pagination.next_cursor) break;
 
     cursor = pagination.next_cursor;
   }
@@ -880,7 +824,7 @@ async function fetchAllProducts() {
 }
 
 // ================================================
-// STOCK POLLING
+// STOCK + PRICE POLLING
 // ================================================
 
 let pollRunning = false;
@@ -894,13 +838,14 @@ async function checkStock() {
   try {
     const products = await fetchAllProducts();
 
-    console.log(
-      `[STOCK] Checking ${products.length} products.`
-    );
+    console.log(`[POLL] Checking ${products.length} products.`);
 
+    // Check product prices on every scan.
+    await checkProductPrices(products);
+
+    // Existing stock check.
     for (const product of products) {
       const productId = product.uniqid || product.id;
-
       if (!productId) continue;
 
       let info;
@@ -912,34 +857,22 @@ async function checkStock() {
 
         info = result?.data || result;
       } catch (error) {
-        console.error(
-          "[STOCK] Could not read product:",
-          productId,
-          error.message
-        );
+        console.error("[STOCK] Could not read product:", productId, error.message);
         continue;
       }
 
-      const variants = Array.isArray(info?.variants)
-        ? info.variants
-        : [];
+      const variants = Array.isArray(info?.variants) ? info.variants : [];
 
       const entries = variants.length
         ? variants.map(variant => ({
             key: `${productId}:${variant.id || variant.uniqid}`,
-            stock: firstDefined(
-              variant.available_stock,
-              variant.stock
-            ),
+            stock: firstDefined(variant.available_stock, variant.stock),
             unlimited: variant.unlimited,
             variantTitle: variant.title,
           }))
         : [{
             key: String(productId),
-            stock: firstDefined(
-              info?.available_stock,
-              info?.stock
-            ),
+            stock: firstDefined(info?.available_stock, info?.stock),
             unlimited: info?.unlimited,
             variantTitle: null,
           }];
@@ -948,26 +881,15 @@ async function checkStock() {
         if (entry.unlimited) continue;
 
         const current = Number(entry.stock);
-
         if (!Number.isFinite(current)) continue;
 
         const previous = stockCache.get(entry.key);
-
         stockCache.set(entry.key, current);
 
-        if (
-          firstPollDone &&
-          previous !== undefined &&
-          current > previous
-        ) {
-          const name =
-            product.title ||
-            product.name ||
-            "Digital product";
+        if (firstPollDone && previous !== undefined && current > previous) {
+          const name = product.title || product.name || "Digital product";
 
-          console.log(
-            `[STOCK] ${name}: ${previous} -> ${current}`
-          );
+          console.log(`[STOCK] ${name}: ${previous} -> ${current}`);
 
           const payload = {
             data: {
@@ -981,37 +903,23 @@ async function checkStock() {
           };
 
           try {
-            await sendToChannel(
-              RESTOCK_CHANNEL_ID,
-              buildRestockMessage(payload)
-            );
-
-            console.log(
-              "[STOCK] Restock notification sent."
-            );
+            await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
+            console.log("[STOCK] Restock notification sent.");
           } catch (error) {
-            console.error(
-              "[STOCK] Discord delivery error:",
-              error.message
-            );
+            console.error("[STOCK] Discord delivery error:", error.message);
           }
         }
       }
     }
 
     if (!firstPollDone) {
-      console.log(
-        `[STOCK] Baseline saved for ${stockCache.size} items.`
-      );
+      console.log(`[STOCK] Baseline saved for ${stockCache.size} items.`);
     }
 
     firstPollDone = true;
 
   } catch (error) {
-    console.error(
-      "[STOCK] Polling error:",
-      error.message
-    );
+    console.error("[POLL] Polling error:", error.message);
   } finally {
     pollRunning = false;
   }
@@ -1019,22 +927,14 @@ async function checkStock() {
 
 function startStockPolling() {
   if (!SHOPPEX_API_KEY) {
-    console.error(
-      "[STOCK] API key missing. Polling disabled."
-    );
+    console.error("[POLL] API key missing. Polling disabled.");
     return;
   }
 
-  console.log(
-    `[STOCK] Polling every ${POLL_SECONDS} seconds.`
-  );
+  console.log(`[POLL] Checking products every ${POLL_SECONDS} seconds.`);
 
   checkStock();
-
-  setInterval(
-    checkStock,
-    POLL_SECONDS * 1000
-  );
+  setInterval(checkStock, POLL_SECONDS * 1000);
 }
 
 // ================================================
@@ -1071,6 +971,10 @@ const commands = [
     .setName("testshoppex")
     .setDescription("Test the Shoppex API connection"),
 
+  new SlashCommandBuilder()
+    .setName("testupdate")
+    .setDescription("Test the product price update notification"),
+
 ].map(command => command.toJSON());
 
 // ================================================
@@ -1082,18 +986,11 @@ async function registerCommands() {
     throw new Error("Discord configuration missing");
   }
 
-  const rest = new REST({
-    version: "10",
-  }).setToken(DISCORD_TOKEN);
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 
   await rest.put(
-    Routes.applicationGuildCommands(
-      CLIENT_ID,
-      GUILD_ID
-    ),
-    {
-      body: commands,
-    }
+    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+    { body: commands }
   );
 
   console.log("[DISCORD] Slash commands registered.");
@@ -1107,7 +1004,6 @@ client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
-    // SAY
     if (interaction.commandName === "say") {
       if (
         SAY_ALLOWED_USER_ID &&
@@ -1119,26 +1015,17 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      const channel =
-        interaction.options.getChannel("canal");
+      const channel = interaction.options.getChannel("canal");
+      const message = interaction.options.getString("mensaje", true);
 
-      const message =
-        interaction.options.getString("mensaje", true);
-
-      if (
-        !channel ||
-        !channel.isTextBased() ||
-        !channel.send
-      ) {
+      if (!channel || !channel.isTextBased() || !channel.send) {
         return interaction.reply({
           content: "Please select a text channel.",
           ephemeral: true,
         });
       }
 
-      await channel.send({
-        content: message,
-      });
+      await channel.send({ content: message });
 
       return interaction.reply({
         content: "Message sent successfully.",
@@ -1146,11 +1033,8 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    // TEST SALE
     if (interaction.commandName === "testventa") {
-      await interaction.deferReply({
-        ephemeral: true,
-      });
+      await interaction.deferReply({ ephemeral: true });
 
       const payload = {
         data: {
@@ -1161,12 +1045,10 @@ client.on("interactionCreate", async interaction => {
           customer_email: "test@example.com",
           quantity: 1,
           product_title: "SIMBA SHOP Test Product",
-          line_items: [
-            {
-              product_title: "SIMBA SHOP Test Product",
-              quantity: 1,
-            },
-          ],
+          line_items: [{
+            product_title: "SIMBA SHOP Test Product",
+            quantity: 1,
+          }],
         },
       };
 
@@ -1174,16 +1056,11 @@ client.on("interactionCreate", async interaction => {
         embeds: [buildSaleEmbed(payload)],
       });
 
-      return interaction.editReply(
-        "Test sale notification sent successfully."
-      );
+      return interaction.editReply("Test sale notification sent successfully.");
     }
 
-    // TEST STOCK
     if (interaction.commandName === "teststock") {
-      await interaction.deferReply({
-        ephemeral: true,
-      });
+      await interaction.deferReply({ ephemeral: true });
 
       const payload = {
         data: {
@@ -1194,52 +1071,52 @@ client.on("interactionCreate", async interaction => {
         },
       };
 
-      await sendToChannel(
-        RESTOCK_CHANNEL_ID,
-        buildRestockMessage(payload)
-      );
+      await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
 
-      return interaction.editReply(
-        "Test restock notification sent successfully."
-      );
+      return interaction.editReply("Test restock notification sent successfully.");
     }
 
-    // TEST SHOPPEX API
+    if (interaction.commandName === "testupdate") {
+      await interaction.deferReply({ ephemeral: true });
+
+      if (!UPDATES_CHANNEL_ID) {
+        return interaction.editReply("UPDATES_CHANNEL_ID is missing in Railway.");
+      }
+
+      const product = {
+        title: "SIMBA SHOP Test Product",
+        price: 2.00,
+        currency: "EUR",
+        url: STORE_URL,
+      };
+
+      await sendToChannel(
+        UPDATES_CHANNEL_ID,
+        buildPriceUpdateMessage(product, 1.50, 2.00)
+      );
+
+      return interaction.editReply("Test price update sent to #updates.");
+    }
+
     if (interaction.commandName === "testshoppex") {
-      await interaction.deferReply({
-        ephemeral: true,
-      });
+      await interaction.deferReply({ ephemeral: true });
 
       if (!SHOPPEX_API_KEY) {
-        return interaction.editReply(
-          "SHOPPEX_API_KEY is missing in Railway."
-        );
+        return interaction.editReply("SHOPPEX_API_KEY is missing in Railway.");
       }
 
       const result = await shoppexGet("/dev/v1/me");
 
-      console.log(
-        "[SHOPPEX] API connection successful."
-      );
+      console.log("[SHOPPEX] API connection successful.");
+      console.log("[SHOPPEX] Account response keys:", Object.keys(result?.data || result || {}));
 
-      console.log(
-        "[SHOPPEX] Account response keys:",
-        Object.keys(result?.data || result || {})
-      );
-
-      return interaction.editReply(
-        "Shoppex API connection successful!"
-      );
+      return interaction.editReply("Shoppex API connection successful!");
     }
 
   } catch (error) {
-    console.error(
-      "[DISCORD] Command error:",
-      error
-    );
+    console.error("[DISCORD] Command error:", error);
 
-    const message =
-      "An error occurred. Check Railway logs.";
+    const message = "An error occurred. Check Railway logs.";
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
@@ -1257,10 +1134,7 @@ client.on("interactionCreate", async interaction => {
 // ================================================
 
 client.once("ready", () => {
-  console.log(
-    `[DISCORD] SIMBA SHOP online as ${client.user.tag}`
-  );
-
+  console.log(`[DISCORD] SIMBA SHOP online as ${client.user.tag}`);
   startStockPolling();
 });
 
@@ -1269,9 +1143,7 @@ client.once("ready", () => {
 // ================================================
 
 app.get("/", (req, res) => {
-  res.status(200).send(
-    "SIMBA SHOP Discord Bot - Shoppex is running."
-  );
+  res.status(200).send("SIMBA SHOP Discord Bot - Shoppex is running.");
 });
 
 app.get("/health", (req, res) => {
@@ -1288,9 +1160,7 @@ app.get("/health", (req, res) => {
 // ================================================
 
 app.listen(PORT, () => {
-  console.log(
-    `[SERVER] HTTP server listening on port ${PORT}`
-  );
+  console.log(`[SERVER] HTTP server listening on port ${PORT}`);
 });
 
 // ================================================
@@ -1307,11 +1177,7 @@ async function startBot() {
     await client.login(DISCORD_TOKEN);
 
   } catch (error) {
-    console.error(
-      "[STARTUP] Bot startup error:",
-      error
-    );
-
+    console.error("[STARTUP] Bot startup error:", error);
     process.exit(1);
   }
 }
