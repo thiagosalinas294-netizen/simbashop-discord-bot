@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -38,7 +37,11 @@ const {
 } = process.env;
 
 const STORE_URL = process.env.STORE_URL || "https://shoppex.io";
+
+// SIMBA SHOP COLORS
 const GOLD = 0xd4af37;
+const BLACK = 0x0d0d0d;
+
 const STOCK_ROLE = STOCK_ROLE_ID || "1550639490123694100";
 
 const POLL_SECONDS = Math.max(
@@ -62,6 +65,7 @@ app.use((req, res, next) => {
     console.log("[SHOPPEX] Event:", req.headers["x-shoppex-event"] || "Missing");
     console.log("[SHOPPEX] Delivery:", req.headers["x-shoppex-delivery"] || "Missing");
   }
+
   next();
 });
 
@@ -94,7 +98,13 @@ function getData(payload) {
 
 function getProduct(payload) {
   const data = getData(payload);
-  return data?.product || data?.variant?.product || payload?.product || {};
+
+  return (
+    data?.product ||
+    data?.variant?.product ||
+    payload?.product ||
+    {}
+  );
 }
 
 function getProductId(payload) {
@@ -209,7 +219,9 @@ function money(value, currency = "EUR") {
   }
 
   const number = Number(value);
-  const formatted = Number.isFinite(number) ? number.toFixed(2) : String(value);
+  const formatted = Number.isFinite(number)
+    ? number.toFixed(2)
+    : String(value);
 
   const symbols = {
     EUR: "€",
@@ -220,7 +232,9 @@ function money(value, currency = "EUR") {
 
   const code = String(currency || "EUR").toUpperCase();
 
-  return symbols[code] ? `${symbols[code]}${formatted}` : `${formatted} ${code}`;
+  return symbols[code]
+    ? `${symbols[code]}${formatted}`
+    : `${formatted} ${code}`;
 }
 
 function maskEmail(email) {
@@ -228,12 +242,18 @@ function maskEmail(email) {
   const at = value.indexOf("@");
 
   if (at <= 0) return value;
+
   return value.slice(0, 2) + "·····" + value.slice(at);
 }
 
 function prettyText(value) {
-  const text = String(value || "").replace(/[_-]+/g, " ").trim();
-  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Not available";
+  const text = String(value || "")
+    .replace(/[_-]+/g, " ")
+    .trim();
+
+  return text
+    ? text.charAt(0).toUpperCase() + text.slice(1)
+    : "Not available";
 }
 
 // ================================================
@@ -241,7 +261,9 @@ function prettyText(value) {
 // ================================================
 
 async function sendToChannel(channelId, message) {
-  if (!channelId) throw new Error("Channel ID is missing");
+  if (!channelId) {
+    throw new Error("Channel ID is missing");
+  }
 
   const channel = await client.channels.fetch(channelId);
 
@@ -259,11 +281,18 @@ async function sendToChannel(channelId, message) {
 function buildSaleEmbed(payload) {
   const data = getData(payload);
 
-  const items = Array.isArray(data.line_items) ? data.line_items : [];
+  const items = Array.isArray(data.line_items)
+    ? data.line_items
+    : [];
 
   const productNames = items.length
     ? items.map(item => {
-        const name = item.product_title || item.product_name || item.title || "Digital product";
+        const name =
+          item.product_title ||
+          item.product_name ||
+          item.title ||
+          "Digital product";
+
         return `${name} ×${item.quantity || 1}`;
       })
     : [`${getProductName(payload)} ×${data.quantity || 1}`];
@@ -309,8 +338,16 @@ function buildSaleEmbed(payload) {
       productNames.map(name => `🏷️ **${name}**`).join("\n")
     )
     .addFields(
-      { name: "Amount", value: `\`${money(total, currency)}\``, inline: true },
-      { name: "Status", value: "`Completed`", inline: true }
+      {
+        name: "Amount",
+        value: `\`${money(total, currency)}\``,
+        inline: true,
+      },
+      {
+        name: "Status",
+        value: "`Completed`",
+        inline: true,
+      }
     )
     .setTimestamp()
     .setFooter({ text: "SIMBA SHOP · Shoppex" });
@@ -360,10 +397,23 @@ function buildRestockMessage(payload) {
     variant.name
   );
 
-  const fullName = variantName ? `${productName} - ${variantName}` : productName;
+  const fullName = variantName
+    ? `${productName} - ${variantName}`
+    : productName;
 
-  const price = firstDefined(data.price, variant.price, product.price);
-  const currency = firstDefined(data.currency, variant.currency, product.currency, "EUR");
+  const price = firstDefined(
+    data.price,
+    variant.price,
+    product.price
+  );
+
+  const currency = firstDefined(
+    data.currency,
+    variant.currency,
+    product.currency,
+    "EUR"
+  );
+
   const stock = getStock(payload);
   const image = getImage(payload);
   const productUrl = getProductUrl(payload);
@@ -394,63 +444,104 @@ function buildRestockMessage(payload) {
   return {
     content: `<@&${STOCK_ROLE}>`,
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(button)],
-    allowedMentions: { roles: [STOCK_ROLE] },
+    components: [
+      new ActionRowBuilder().addComponents(button),
+    ],
+    allowedMentions: {
+      roles: [STOCK_ROLE],
+    },
   };
 }
 
 // ================================================
-// PRICE UPDATE EMBED
+// PRICE UPDATE EMBED - SIMBA SHOP DESIGN
 // ================================================
 
 function buildPriceUpdateMessage(product, oldPrice, newPrice) {
   const currency = product.currency || "EUR";
-  const name = product.title || product.name || "Digital product";
-  const image = getImage({ data: { product } });
-  const url = getProductUrl({ data: { product } });
+
+  const name =
+    product.title ||
+    product.name ||
+    "Digital product";
+
+  const image = getImage({
+    data: { product },
+  });
+
+  const url = getProductUrl({
+    data: { product },
+  });
 
   const oldNumber = Number(oldPrice);
   const newNumber = Number(newPrice);
 
   const difference = newNumber - oldNumber;
+
   const percentage = oldNumber !== 0
     ? (difference / oldNumber) * 100
     : null;
 
   const increased = difference > 0;
-  const direction = increased ? "PRICE INCREASED" : "PRICE REDUCED";
-  const emoji = increased ? "📈" : "📉";
+
+  const status = increased
+    ? "Price increased"
+    : "Price reduced";
+
+  const changeAmount =
+    `${increased ? "+" : "-"}${money(
+      Math.abs(difference),
+      currency
+    )}`;
+
   const percentageText = percentage === null
     ? "N/A"
-    : `${Math.abs(percentage).toFixed(2)}%`;
+    : `${increased ? "+" : "-"}${Math.abs(percentage).toFixed(2)}%`;
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setAuthor({ name: "SIMBA SHOP · PRICE UPDATE" })
-    .setTitle(`${emoji} ${direction}`)
-    .setURL(url)
     .setDescription(
-      `**${name}**\n` +
-      "───────────────────────\n\n" +
-      `**Previous price:** ~~${money(oldPrice, currency)}~~\n` +
-      `**New price:** **${money(newPrice, currency)}**\n\n` +
-      `**Change:** ${increased ? "+" : "-"}${money(Math.abs(difference), currency)} (${percentageText})`
+      "**PRICE UPDATE • SIMBA SHOP**\n\n" +
+      `**${name}**\n\n` +
+      `**${status}**`
+    )
+    .addFields(
+      {
+        name: "Previous",
+        value: `~~${money(oldPrice, currency)}~~`,
+        inline: true,
+      },
+      {
+        name: "Current",
+        value: `**${money(newPrice, currency)}**`,
+        inline: true,
+      },
+      {
+        name: "Change",
+        value: `${changeAmount}\n${percentageText}`,
+        inline: true,
+      }
     )
     .setTimestamp()
-    .setFooter({ text: "SIMBA SHOP · Shoppex" });
+    .setFooter({
+      text: "SIMBA SHOP · Price updated",
+    });
 
+  // Large product image, like the reference design.
   if (image && /^https?:\/\//i.test(image)) {
-    embed.setThumbnail(image);
+    embed.setImage(image);
   }
 
   const button = new ButtonBuilder()
-    .setLabel("Buy Now")
+    .setLabel("Buy now")
     .setStyle(ButtonStyle.Link)
     .setURL(url);
 
   return {
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(button)],
+    components: [
+      new ActionRowBuilder().addComponents(button),
+    ],
   };
 }
 
@@ -464,11 +555,21 @@ function verifyShoppexWebhook(req) {
     return false;
   }
 
-  const signatureHeader = req.headers["x-shoppex-signature-v2"];
-  const deliveryId = req.headers["x-shoppex-delivery"];
-  const timestampHeader = req.headers["x-shoppex-timestamp"];
+  const signatureHeader =
+    req.headers["x-shoppex-signature-v2"];
 
-  if (!signatureHeader || !deliveryId || !timestampHeader || !req.rawBody) {
+  const deliveryId =
+    req.headers["x-shoppex-delivery"];
+
+  const timestampHeader =
+    req.headers["x-shoppex-timestamp"];
+
+  if (
+    !signatureHeader ||
+    !deliveryId ||
+    !timestampHeader ||
+    !req.rawBody
+  ) {
     console.error("[SHOPPEX] Missing signature data");
     return false;
   }
@@ -477,7 +578,10 @@ function verifyShoppexWebhook(req) {
 
   for (const part of signatureHeader.split(",")) {
     const [key, ...rest] = part.trim().split("=");
-    if (key && rest.length) fields[key] = rest.join("=");
+
+    if (key && rest.length) {
+      fields[key] = rest.join("=");
+    }
   }
 
   const timestamp = fields.t;
@@ -493,7 +597,9 @@ function verifyShoppexWebhook(req) {
     return false;
   }
 
-  const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
+  const age = Math.abs(
+    Math.floor(Date.now() / 1000) - Number(timestamp)
+  );
 
   if (!Number.isFinite(age) || age > 300) {
     console.error("[SHOPPEX] Expired timestamp");
@@ -544,7 +650,6 @@ const stockCache = new Map();
 
 function updateCacheFromWebhook(payload) {
   const data = getData(payload);
-  const product = getProduct(payload);
   const productId = getProductId(payload);
 
   const variants = Array.isArray(data.variants)
@@ -556,7 +661,13 @@ function updateCacheFromWebhook(payload) {
   if (productId && variants.length) {
     for (const variant of variants) {
       const id = variant.id || variant.uniqid || "default";
-      const stock = Number(firstDefined(variant.available_stock, variant.stock));
+
+      const stock = Number(
+        firstDefined(
+          variant.available_stock,
+          variant.stock
+        )
+      );
 
       if (Number.isFinite(stock)) {
         stockCache.set(`${productId}:${id}`, stock);
@@ -566,7 +677,10 @@ function updateCacheFromWebhook(payload) {
 
   if (productId) {
     const stock = Number(getStock(payload));
-    if (Number.isFinite(stock)) stockCache.set(String(productId), stock);
+
+    if (Number.isFinite(stock)) {
+      stockCache.set(String(productId), stock);
+    }
   }
 }
 
@@ -575,6 +689,7 @@ function updateCacheFromWebhook(payload) {
 // ================================================
 
 const priceCache = new Map();
+
 let priceBaselineDone = false;
 
 function getProductPrice(product) {
@@ -589,12 +704,21 @@ function getProductPrice(product) {
 async function checkProductPrices(products) {
   for (const product of products) {
     const id = product.uniqid || product.id;
+
     if (!id) continue;
 
     const price = getProductPrice(product);
-    if (price === undefined || price === null || price === "") continue;
+
+    if (
+      price === undefined ||
+      price === null ||
+      price === ""
+    ) {
+      continue;
+    }
 
     const currentPrice = Number(price);
+
     if (!Number.isFinite(currentPrice)) continue;
 
     const key = String(id);
@@ -602,28 +726,42 @@ async function checkProductPrices(products) {
 
     priceCache.set(key, currentPrice);
 
-    // First scan creates the baseline; it does not send notifications.
-    if (!priceBaselineDone || previousPrice === undefined) continue;
+    // First scan creates the baseline.
+    if (!priceBaselineDone || previousPrice === undefined) {
+      continue;
+    }
 
     if (currentPrice !== previousPrice) {
-      console.log(`[PRICE] ${product.title || product.name}: ${previousPrice} -> ${currentPrice}`);
+      console.log(
+        `[PRICE] ${product.title || product.name}: ${previousPrice} -> ${currentPrice}`
+      );
 
       try {
         await sendToChannel(
           UPDATES_CHANNEL_ID,
-          buildPriceUpdateMessage(product, previousPrice, currentPrice)
+          buildPriceUpdateMessage(
+            product,
+            previousPrice,
+            currentPrice
+          )
         );
 
         console.log("[PRICE] Price update notification sent.");
       } catch (error) {
-        console.error("[PRICE] Discord delivery error:", error.message);
+        console.error(
+          "[PRICE] Discord delivery error:",
+          error.message
+        );
       }
     }
   }
 
   if (!priceBaselineDone) {
     priceBaselineDone = true;
-    console.log(`[PRICE] Baseline saved for ${priceCache.size} products.`);
+
+    console.log(
+      `[PRICE] Baseline saved for ${priceCache.size} products.`
+    );
   }
 }
 
@@ -636,10 +774,20 @@ async function processWebhook(event, payload) {
 
   const data = getData(payload);
 
-  console.log("[SHOPPEX] Payload keys:", Object.keys(payload || {}));
-  console.log("[SHOPPEX] Data keys:", Object.keys(data || {}));
+  console.log(
+    "[SHOPPEX] Payload keys:",
+    Object.keys(payload || {})
+  );
 
-  if (event === "order:paid" || event === "order:paid:product") {
+  console.log(
+    "[SHOPPEX] Data keys:",
+    Object.keys(data || {})
+  );
+
+  if (
+    event === "order:paid" ||
+    event === "order:paid:product"
+  ) {
     console.log("[SHOPPEX] Paid order detected.");
 
     await sendToChannel(SALES_CHANNEL_ID, {
@@ -656,28 +804,44 @@ async function processWebhook(event, payload) {
     event.includes("stock")
   ) {
     console.log("[SHOPPEX] Stock update detected.");
-    console.log("[SHOPPEX] Product:", getProductName(payload));
-    console.log("[SHOPPEX] Stock:", getStock(payload));
+
+    console.log(
+      "[SHOPPEX] Product:",
+      getProductName(payload)
+    );
+
+    console.log(
+      "[SHOPPEX] Stock:",
+      getStock(payload)
+    );
 
     updateCacheFromWebhook(payload);
 
-    await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
+    await sendToChannel(
+      RESTOCK_CHANNEL_ID,
+      buildRestockMessage(payload)
+    );
 
     console.log("[SHOPPEX] Restock notification sent.");
     return;
   }
 
   if (event === "product:edited") {
-    console.log("[SHOPPEX] Product edited detected:", getProductName(payload));
+    console.log(
+      "[SHOPPEX] Product edited detected:",
+      getProductName(payload)
+    );
 
-    // The API scan compares the current catalog against the saved prices.
-    // If the price changed, the update message is sent to #updates.
     await checkStock();
     return;
   }
 
   if (event === "product:created") {
-    console.log("[SHOPPEX] New product created:", getProductName(payload));
+    console.log(
+      "[SHOPPEX] New product created:",
+      getProductName(payload)
+    );
+
     await checkStock();
     return;
   }
@@ -699,10 +863,15 @@ app.post("/webhooks/shoppex", async (req, res) => {
     });
   }
 
-  const deliveryId = String(req.headers["x-shoppex-delivery"]);
+  const deliveryId = String(
+    req.headers["x-shoppex-delivery"]
+  );
 
   if (processedDeliveries.has(deliveryId)) {
-    console.log("[SHOPPEX] Duplicate delivery:", deliveryId);
+    console.log(
+      "[SHOPPEX] Duplicate delivery:",
+      deliveryId
+    );
 
     return res.status(200).json({
       received: true,
@@ -718,12 +887,15 @@ app.post("/webhooks/shoppex", async (req, res) => {
     payload.type ||
     payload.event_type ||
     ""
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
 
   console.log("[SHOPPEX] Verified event:", event);
 
   try {
     await processWebhook(event, payload);
+
     rememberDelivery(deliveryId);
 
     return res.status(200).json({
@@ -731,7 +903,10 @@ app.post("/webhooks/shoppex", async (req, res) => {
       event,
     });
   } catch (error) {
-    console.error("[SHOPPEX] Processing error:", error);
+    console.error(
+      "[SHOPPEX] Processing error:",
+      error
+    );
 
     return res.status(500).json({
       received: false,
@@ -747,7 +922,9 @@ app.post("/webhooks/shoppex", async (req, res) => {
 function shoppexGet(path) {
   return new Promise((resolve, reject) => {
     if (!SHOPPEX_API_KEY) {
-      return reject(new Error("SHOPPEX_API_KEY missing"));
+      return reject(
+        new Error("SHOPPEX_API_KEY missing")
+      );
     }
 
     const request = https.request(
@@ -765,25 +942,40 @@ function shoppexGet(path) {
         let body = "";
 
         response.setEncoding("utf8");
-        response.on("data", chunk => body += chunk);
+
+        response.on("data", chunk => {
+          body += chunk;
+        });
 
         response.on("end", () => {
-          if (response.statusCode < 200 || response.statusCode >= 300) {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
             return reject(
-              new Error(`Shoppex API HTTP ${response.statusCode}: ${body.slice(0, 300)}`)
+              new Error(
+                `Shoppex API HTTP ${response.statusCode}: ${body.slice(0, 300)}`
+              )
             );
           }
 
           try {
             resolve(JSON.parse(body));
           } catch {
-            reject(new Error("Shoppex API returned invalid JSON"));
+            reject(
+              new Error("Shoppex API returned invalid JSON")
+            );
           }
         });
       }
     );
 
-    request.on("timeout", () => request.destroy(new Error("Shoppex API timeout")));
+    request.on("timeout", () => {
+      request.destroy(
+        new Error("Shoppex API timeout")
+      );
+    });
+
     request.on("error", reject);
     request.end();
   });
@@ -798,11 +990,18 @@ async function fetchAllProducts() {
   let cursor = null;
 
   for (let page = 0; page < 20; page++) {
-    const query = new URLSearchParams({ limit: "100" });
+    const query = new URLSearchParams({
+      limit: "100",
+    });
 
-    if (cursor) query.set("cursor", cursor);
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
 
-    const result = await shoppexGet(`/dev/v1/products?${query.toString()}`);
+    const result = await shoppexGet(
+      `/dev/v1/products?${query.toString()}`
+    );
+
     const data = result?.data;
 
     const list = Array.isArray(data)
@@ -813,9 +1012,17 @@ async function fetchAllProducts() {
 
     products.push(...list);
 
-    const pagination = result?.pagination || data?.pagination || {};
+    const pagination =
+      result?.pagination ||
+      data?.pagination ||
+      {};
 
-    if (!pagination.has_more || !pagination.next_cursor) break;
+    if (
+      !pagination.has_more ||
+      !pagination.next_cursor
+    ) {
+      break;
+    }
 
     cursor = pagination.next_cursor;
   }
@@ -831,21 +1038,28 @@ let pollRunning = false;
 let firstPollDone = false;
 
 async function checkStock() {
-  if (pollRunning || !SHOPPEX_API_KEY) return;
+  if (pollRunning || !SHOPPEX_API_KEY) {
+    return;
+  }
 
   pollRunning = true;
 
   try {
     const products = await fetchAllProducts();
 
-    console.log(`[POLL] Checking ${products.length} products.`);
+    console.log(
+      `[POLL] Checking ${products.length} products.`
+    );
 
     // Check product prices on every scan.
     await checkProductPrices(products);
 
     // Existing stock check.
     for (const product of products) {
-      const productId = product.uniqid || product.id;
+      const productId =
+        product.uniqid ||
+        product.id;
+
       if (!productId) continue;
 
       let info;
@@ -857,22 +1071,35 @@ async function checkStock() {
 
         info = result?.data || result;
       } catch (error) {
-        console.error("[STOCK] Could not read product:", productId, error.message);
+        console.error(
+          "[STOCK] Could not read product:",
+          productId,
+          error.message
+        );
+
         continue;
       }
 
-      const variants = Array.isArray(info?.variants) ? info.variants : [];
+      const variants = Array.isArray(info?.variants)
+        ? info.variants
+        : [];
 
       const entries = variants.length
         ? variants.map(variant => ({
             key: `${productId}:${variant.id || variant.uniqid}`,
-            stock: firstDefined(variant.available_stock, variant.stock),
+            stock: firstDefined(
+              variant.available_stock,
+              variant.stock
+            ),
             unlimited: variant.unlimited,
             variantTitle: variant.title,
           }))
         : [{
             key: String(productId),
-            stock: firstDefined(info?.available_stock, info?.stock),
+            stock: firstDefined(
+              info?.available_stock,
+              info?.stock
+            ),
             unlimited: info?.unlimited,
             variantTitle: null,
           }];
@@ -881,15 +1108,26 @@ async function checkStock() {
         if (entry.unlimited) continue;
 
         const current = Number(entry.stock);
+
         if (!Number.isFinite(current)) continue;
 
         const previous = stockCache.get(entry.key);
+
         stockCache.set(entry.key, current);
 
-        if (firstPollDone && previous !== undefined && current > previous) {
-          const name = product.title || product.name || "Digital product";
+        if (
+          firstPollDone &&
+          previous !== undefined &&
+          current > previous
+        ) {
+          const name =
+            product.title ||
+            product.name ||
+            "Digital product";
 
-          console.log(`[STOCK] ${name}: ${previous} -> ${current}`);
+          console.log(
+            `[STOCK] ${name}: ${previous} -> ${current}`
+          );
 
           const payload = {
             data: {
@@ -903,23 +1141,37 @@ async function checkStock() {
           };
 
           try {
-            await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
-            console.log("[STOCK] Restock notification sent.");
+            await sendToChannel(
+              RESTOCK_CHANNEL_ID,
+              buildRestockMessage(payload)
+            );
+
+            console.log(
+              "[STOCK] Restock notification sent."
+            );
           } catch (error) {
-            console.error("[STOCK] Discord delivery error:", error.message);
+            console.error(
+              "[STOCK] Discord delivery error:",
+              error.message
+            );
           }
         }
       }
     }
 
     if (!firstPollDone) {
-      console.log(`[STOCK] Baseline saved for ${stockCache.size} items.`);
+      console.log(
+        `[STOCK] Baseline saved for ${stockCache.size} items.`
+      );
     }
 
     firstPollDone = true;
 
   } catch (error) {
-    console.error("[POLL] Polling error:", error.message);
+    console.error(
+      "[POLL] Polling error:",
+      error.message
+    );
   } finally {
     pollRunning = false;
   }
@@ -927,14 +1179,23 @@ async function checkStock() {
 
 function startStockPolling() {
   if (!SHOPPEX_API_KEY) {
-    console.error("[POLL] API key missing. Polling disabled.");
+    console.error(
+      "[POLL] API key missing. Polling disabled."
+    );
+
     return;
   }
 
-  console.log(`[POLL] Checking products every ${POLL_SECONDS} seconds.`);
+  console.log(
+    `[POLL] Checking products every ${POLL_SECONDS} seconds.`
+  );
 
   checkStock();
-  setInterval(checkStock, POLL_SECONDS * 1000);
+
+  setInterval(
+    checkStock,
+    POLL_SECONDS * 1000
+  );
 }
 
 // ================================================
@@ -983,17 +1244,28 @@ const commands = [
 
 async function registerCommands() {
   if (!CLIENT_ID || !GUILD_ID || !DISCORD_TOKEN) {
-    throw new Error("Discord configuration missing");
+    throw new Error(
+      "Discord configuration missing"
+    );
   }
 
-  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+  const rest = new REST({
+    version: "10",
+  }).setToken(DISCORD_TOKEN);
 
   await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    { body: commands }
+    Routes.applicationGuildCommands(
+      CLIENT_ID,
+      GUILD_ID
+    ),
+    {
+      body: commands,
+    }
   );
 
-  console.log("[DISCORD] Slash commands registered.");
+  console.log(
+    "[DISCORD] Slash commands registered."
+  );
 }
 
 // ================================================
@@ -1001,7 +1273,9 @@ async function registerCommands() {
 // ================================================
 
 client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (!interaction.isChatInputCommand()) {
+    return;
+  }
 
   try {
     if (interaction.commandName === "say") {
@@ -1015,17 +1289,26 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      const channel = interaction.options.getChannel("canal");
-      const message = interaction.options.getString("mensaje", true);
+      const channel =
+        interaction.options.getChannel("canal");
 
-      if (!channel || !channel.isTextBased() || !channel.send) {
+      const message =
+        interaction.options.getString("mensaje", true);
+
+      if (
+        !channel ||
+        !channel.isTextBased() ||
+        !channel.send
+      ) {
         return interaction.reply({
           content: "Please select a text channel.",
           ephemeral: true,
         });
       }
 
-      await channel.send({ content: message });
+      await channel.send({
+        content: message,
+      });
 
       return interaction.reply({
         content: "Message sent successfully.",
@@ -1034,7 +1317,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "testventa") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        ephemeral: true,
+      });
 
       const payload = {
         data: {
@@ -1053,14 +1338,20 @@ client.on("interactionCreate", async interaction => {
       };
 
       await sendToChannel(SALES_CHANNEL_ID, {
-        embeds: [buildSaleEmbed(payload)],
+        embeds: [
+          buildSaleEmbed(payload),
+        ],
       });
 
-      return interaction.editReply("Test sale notification sent successfully.");
+      return interaction.editReply(
+        "Test sale notification sent successfully."
+      );
     }
 
     if (interaction.commandName === "teststock") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        ephemeral: true,
+      });
 
       const payload = {
         data: {
@@ -1071,16 +1362,25 @@ client.on("interactionCreate", async interaction => {
         },
       };
 
-      await sendToChannel(RESTOCK_CHANNEL_ID, buildRestockMessage(payload));
+      await sendToChannel(
+        RESTOCK_CHANNEL_ID,
+        buildRestockMessage(payload)
+      );
 
-      return interaction.editReply("Test restock notification sent successfully.");
+      return interaction.editReply(
+        "Test restock notification sent successfully."
+      );
     }
 
     if (interaction.commandName === "testupdate") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        ephemeral: true,
+      });
 
       if (!UPDATES_CHANNEL_ID) {
-        return interaction.editReply("UPDATES_CHANNEL_ID is missing in Railway.");
+        return interaction.editReply(
+          "UPDATES_CHANNEL_ID is missing in Railway."
+        );
       }
 
       const product = {
@@ -1092,33 +1392,58 @@ client.on("interactionCreate", async interaction => {
 
       await sendToChannel(
         UPDATES_CHANNEL_ID,
-        buildPriceUpdateMessage(product, 1.50, 2.00)
+        buildPriceUpdateMessage(
+          product,
+          1.50,
+          2.00
+        )
       );
 
-      return interaction.editReply("Test price update sent to #updates.");
+      return interaction.editReply(
+        "Test price update sent to #updates."
+      );
     }
 
     if (interaction.commandName === "testshoppex") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({
+        ephemeral: true,
+      });
 
       if (!SHOPPEX_API_KEY) {
-        return interaction.editReply("SHOPPEX_API_KEY is missing in Railway.");
+        return interaction.editReply(
+          "SHOPPEX_API_KEY is missing in Railway."
+        );
       }
 
       const result = await shoppexGet("/dev/v1/me");
 
-      console.log("[SHOPPEX] API connection successful.");
-      console.log("[SHOPPEX] Account response keys:", Object.keys(result?.data || result || {}));
+      console.log(
+        "[SHOPPEX] API connection successful."
+      );
 
-      return interaction.editReply("Shoppex API connection successful!");
+      console.log(
+        "[SHOPPEX] Account response keys:",
+        Object.keys(result?.data || result || {})
+      );
+
+      return interaction.editReply(
+        "Shoppex API connection successful!"
+      );
     }
 
   } catch (error) {
-    console.error("[DISCORD] Command error:", error);
+    console.error(
+      "[DISCORD] Command error:",
+      error
+    );
 
-    const message = "An error occurred. Check Railway logs.";
+    const message =
+      "An error occurred. Check Railway logs.";
 
-    if (interaction.deferred || interaction.replied) {
+    if (
+      interaction.deferred ||
+      interaction.replied
+    ) {
       await interaction.editReply(message).catch(() => {});
     } else {
       await interaction.reply({
@@ -1134,7 +1459,10 @@ client.on("interactionCreate", async interaction => {
 // ================================================
 
 client.once("ready", () => {
-  console.log(`[DISCORD] SIMBA SHOP online as ${client.user.tag}`);
+  console.log(
+    `[DISCORD] SIMBA SHOP online as ${client.user.tag}`
+  );
+
   startStockPolling();
 });
 
@@ -1143,7 +1471,9 @@ client.once("ready", () => {
 // ================================================
 
 app.get("/", (req, res) => {
-  res.status(200).send("SIMBA SHOP Discord Bot - Shoppex is running.");
+  res.status(200).send(
+    "SIMBA SHOP Discord Bot - Shoppex is running."
+  );
 });
 
 app.get("/health", (req, res) => {
@@ -1160,7 +1490,9 @@ app.get("/health", (req, res) => {
 // ================================================
 
 app.listen(PORT, () => {
-  console.log(`[SERVER] HTTP server listening on port ${PORT}`);
+  console.log(
+    `[SERVER] HTTP server listening on port ${PORT}`
+  );
 });
 
 // ================================================
@@ -1170,14 +1502,21 @@ app.listen(PORT, () => {
 async function startBot() {
   try {
     if (!DISCORD_TOKEN) {
-      throw new Error("DISCORD_TOKEN is missing");
+      throw new Error(
+        "DISCORD_TOKEN is missing"
+      );
     }
 
     await registerCommands();
+
     await client.login(DISCORD_TOKEN);
 
   } catch (error) {
-    console.error("[STARTUP] Bot startup error:", error);
+    console.error(
+      "[STARTUP] Bot startup error:",
+      error
+    );
+
     process.exit(1);
   }
 }
