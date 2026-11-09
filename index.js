@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const express = require("express");
@@ -16,6 +17,10 @@ const {
   Routes,
 } = require("discord.js");
 
+// ================================================
+// CONFIGURATION
+// ================================================
+
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
@@ -31,48 +36,64 @@ const {
   STOCK_ROLE_ID,
 } = process.env;
 
-const STORE_URL = process.env.STORE_URL || "https://shoppex.io";
+const STORE_URL =
+  process.env.STORE_URL || "https://shoppex.io";
+
 const GOLD = 0xd4af37;
-const STOCK_ROLE = STOCK_ROLE_ID || "1550639490123694100";
+const STOCK_ROLE =
+  STOCK_ROLE_ID || "1550639490123694100";
+
+const POLL_SECONDS = Math.max(
+  30,
+  Number(process.env.SHOPPEX_POLL_SECONDS || 60)
+);
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-// --------------------------------------------------
-// WEBHOOK REQUEST DIAGNOSTICS
-// Must run BEFORE express.json()
-// --------------------------------------------------
+// ================================================
+// WEBHOOK DIAGNOSTICS
+// ================================================
 
 app.use((req, res, next) => {
   if (req.path.startsWith("/webhooks/shoppex")) {
-    console.log("--------------------------------");
+    console.log("\n================================");
     console.log("[SHOPPEX] Incoming request");
     console.log("[SHOPPEX] Method:", req.method);
     console.log("[SHOPPEX] Path:", req.path);
-    console.log("[SHOPPEX] Event header:", req.headers["x-shoppex-event"] || "Missing");
-    console.log("[SHOPPEX] Delivery ID:", req.headers["x-shoppex-delivery"] || "Missing");
-    console.log("[SHOPPEX] Timestamp:", req.headers["x-shoppex-timestamp"] || "Missing");
-    console.log("[SHOPPEX] Content-Type:", req.headers["content-type"] || "Missing");
+    console.log(
+      "[SHOPPEX] Event:",
+      req.headers["x-shoppex-event"] || "Missing"
+    );
+    console.log(
+      "[SHOPPEX] Delivery:",
+      req.headers["x-shoppex-delivery"] || "Missing"
+    );
+    console.log(
+      "[SHOPPEX] Timestamp:",
+      req.headers["x-shoppex-timestamp"] || "Missing"
+    );
+    console.log("================================");
   }
 
   next();
 });
 
-// --------------------------------------------------
-// JSON PARSER
-// --------------------------------------------------
+// ================================================
+// RAW BODY + JSON
+// ================================================
 
 app.use(express.json({
-  limit: "1mb",
+  limit: "2mb",
   verify: (req, res, buffer) => {
     req.rawBody = Buffer.from(buffer);
   },
 }));
 
-// --------------------------------------------------
+// ================================================
 // HELPERS
-// --------------------------------------------------
+// ================================================
 
 function firstDefined(...values) {
   return values.find(value =>
@@ -82,12 +103,138 @@ function firstDefined(...values) {
   );
 }
 
+function getData(payload) {
+  return (
+    payload?.data ||
+    payload?.payload ||
+    payload ||
+    {}
+  );
+}
+
+function getProduct(payload) {
+  const data = getData(payload);
+
+  return (
+    data?.product ||
+    data?.variant?.product ||
+    payload?.product ||
+    {}
+  );
+}
+
+function getProductName(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+  const variant = data?.variant || {};
+
+  return firstDefined(
+    data.product_title,
+    data.product_name,
+    data.productName,
+    data.title,
+    data.name,
+    product.title,
+    product.name,
+    variant.product_title,
+    payload?.product_title,
+    "Digital product"
+  );
+}
+
+function getStock(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+  const variant = data?.variant || {};
+
+  return firstDefined(
+    data.available_stock,
+    data.stock,
+    data.stock_quantity,
+    data.new_stock,
+    data.new_quantity,
+    data.quantity,
+    data.inventory,
+    data.total_stock,
+    data.keys_count,
+    data.key_count,
+    variant.available_stock,
+    variant.stock,
+    variant.stock_quantity,
+    variant.quantity,
+    product.available_stock,
+    product.stock,
+    product.stock_quantity,
+    product.quantity,
+    product.inventory,
+    product.keys_count,
+    product.key_count,
+    payload?.available_stock,
+    payload?.stock
+  );
+}
+
+function getImage(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+
+  const image = firstDefined(
+    data.image_url,
+    data.image,
+    product.image_url,
+    product.image,
+    product.thumbnail,
+    product.cover,
+    product.images?.[0]?.url,
+    product.images?.[0]
+  );
+
+  if (
+    typeof image === "string" &&
+    /^https?:\/\/\S+$/i.test(image)
+  ) {
+    return image;
+  }
+
+  if (image && typeof image === "object") {
+    return firstDefined(
+      image.url,
+      image.src,
+      image.href
+    );
+  }
+
+  return null;
+}
+
+function getProductUrl(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+
+  const url = firstDefined(
+    data.product_url,
+    data.url,
+    product.url,
+    product.product_url,
+    STORE_URL
+  );
+
+  return /^https?:\/\//i.test(String(url))
+    ? String(url)
+    : STORE_URL;
+}
+
 function money(value, currency = "EUR") {
-  if (value === undefined || value === null || value === "") {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
     return "Not available";
   }
 
   const number = Number(value);
+
   const formatted = Number.isFinite(number)
     ? number.toFixed(2)
     : String(value);
@@ -96,6 +243,7 @@ function money(value, currency = "EUR") {
     EUR: "€",
     USD: "$",
     GBP: "£",
+    ARS: "$",
   };
 
   const code = String(currency || "EUR").toUpperCase();
@@ -124,139 +272,31 @@ function prettyText(value) {
     : "Not available";
 }
 
-function getData(payload) {
-  return payload?.data ||
-    payload?.payload ||
-    payload ||
-    {};
-}
-
-function getProduct(payload) {
-  const data = getData(payload);
-
-  return data?.product ||
-    data?.variant?.product ||
-    payload?.product ||
-    {};
-}
-
-function getProductName(payload) {
-  const data = getData(payload);
-  const product = getProduct(payload);
-  const variant = data?.variant || {};
-
-  return firstDefined(
-    data.product_title,
-    data.product_name,
-    data.productName,
-    data.title,
-    data.name,
-    product.title,
-    product.name,
-    variant.product_title,
-    payload?.product_title,
-    "Digital product"
-  );
-}
-
-function getStock(payload) {
-  const data = getData(payload);
-  const product = getProduct(payload);
-  const variant = data?.variant || {};
-
-  return firstDefined(
-    data.stock,
-    data.stock_quantity,
-    data.quantity,
-    data.new_stock,
-    data.new_quantity,
-    data.available_stock,
-    data.available,
-    data.inventory,
-    data.total_stock,
-    data.keys_count,
-    data.key_count,
-    variant.stock,
-    variant.stock_quantity,
-    variant.quantity,
-    product.stock,
-    product.stock_quantity,
-    product.quantity,
-    product.inventory,
-    product.keys_count,
-    product.key_count,
-    payload?.stock,
-    payload?.stock_quantity
-  );
-}
-
-function getImage(payload) {
-  const data = getData(payload);
-  const product = getProduct(payload);
-
-  const image = firstDefined(
-    data.image_url,
-    data.image,
-    product.image_url,
-    product.image,
-    product.thumbnail,
-    product.cover,
-    product.images?.[0]?.url,
-    product.images?.[0]
-  );
-
-  if (typeof image === "string" &&
-      /^https?:\/\/\S+$/i.test(image)) {
-    return image;
-  }
-
-  if (image && typeof image === "object") {
-    return firstDefined(image.url, image.src, image.href);
-  }
-
-  return null;
-}
-
-function getProductUrl(payload) {
-  const data = getData(payload);
-  const product = getProduct(payload);
-
-  const url = firstDefined(
-    data.product_url,
-    data.url,
-    product.url,
-    product.product_url,
-    STORE_URL
-  );
-
-  return /^https?:\/\//i.test(String(url))
-    ? String(url)
-    : STORE_URL;
-}
-
-// --------------------------------------------------
+// ================================================
 // DISCORD CHANNELS
-// --------------------------------------------------
+// ================================================
 
 async function sendToChannel(channelId, message) {
   if (!channelId) {
-    throw new Error("Destination channel ID is missing");
+    throw new Error("Channel ID is missing");
   }
 
   const channel = await client.channels.fetch(channelId);
 
-  if (!channel ||
-      !channel.isTextBased() ||
-      !channel.send) {
+  if (
+    !channel ||
+    !channel.isTextBased() ||
+    !channel.send
+  ) {
     throw new Error("Invalid Discord text channel");
   }
 
   return channel.send(message);
 }
 
-// --------------------------------------------------
+// ================================================
 // SALE EMBED
-// --------------------------------------------------
+// ================================================
 
 function buildSaleEmbed(payload) {
   const data = getData(payload);
@@ -267,8 +307,10 @@ function buildSaleEmbed(payload) {
 
   const productNames = items.length
     ? items.map(item => {
-        const name = item.product_title ||
+        const name =
+          item.product_title ||
           item.product_name ||
+          item.title ||
           "Digital product";
 
         return `${name} ×${item.quantity || 1}`;
@@ -317,7 +359,9 @@ function buildSaleEmbed(payload) {
     .setDescription(
       "**New sale completed!**\n" +
       "───────────────────────\n\n" +
-      productNames.map(name => `🏷️ **${name}**`).join("\n")
+      productNames
+        .map(name => `🏷️ **${name}**`)
+        .join("\n")
     )
     .addFields(
       {
@@ -330,7 +374,11 @@ function buildSaleEmbed(payload) {
         value: "`Completed`",
         inline: true,
       }
-    );
+    )
+    .setTimestamp()
+    .setFooter({
+      text: "SIMBA SHOP · Shoppex",
+    });
 
   if (method) {
     embed.addFields({
@@ -356,16 +404,12 @@ function buildSaleEmbed(payload) {
     });
   }
 
-  return embed
-    .setTimestamp()
-    .setFooter({
-      text: "SIMBA SHOP · Shoppex",
-    });
+  return embed;
 }
 
-// --------------------------------------------------
-// RESTOCK MESSAGE
-// --------------------------------------------------
+// ================================================
+// RESTOCK EMBED
+// ================================================
 
 function buildRestockMessage(payload) {
   const data = getData(payload);
@@ -441,13 +485,13 @@ function buildRestockMessage(payload) {
   };
 }
 
-// --------------------------------------------------
-// WEBHOOK SIGNATURE VERIFICATION
-// --------------------------------------------------
+// ================================================
+// SHOPPEX WEBHOOK SIGNATURE
+// ================================================
 
 function verifyShoppexWebhook(req) {
   if (!SHOPPEX_WEBHOOK_SECRET) {
-    console.error("[SHOPPEX] WEBHOOK SECRET IS MISSING");
+    console.error("[SHOPPEX] Missing webhook secret");
     return false;
   }
 
@@ -460,51 +504,52 @@ function verifyShoppexWebhook(req) {
   const timestampHeader =
     req.headers["x-shoppex-timestamp"];
 
-  if (!signatureHeader ||
-      !deliveryId ||
-      !timestampHeader ||
-      !req.rawBody) {
-    console.error("[SHOPPEX] Missing signature headers or raw body");
-    return false;
-  }
-
-  const parts = signatureHeader
-    .split(",")
-    .map(part => part.trim());
-
-  if (!parts.includes("v1")) {
-    console.error("[SHOPPEX] Unsupported signature version");
+  if (
+    !signatureHeader ||
+    !deliveryId ||
+    !timestampHeader ||
+    !req.rawBody
+  ) {
+    console.error("[SHOPPEX] Missing signature data");
     return false;
   }
 
   const fields = {};
 
-  for (const part of parts) {
-    if (part.includes("=")) {
-      const [key, value] = part.split("=", 2);
-      fields[key] = value;
+  for (const part of signatureHeader.split(",")) {
+    const [key, ...rest] = part.trim().split("=");
+
+    if (key && rest.length) {
+      fields[key] = rest.join("=");
     }
   }
 
   const timestamp = fields.t;
   const signature = fields.h;
 
-  if (!timestamp ||
-      !signature ||
-      timestamp !== String(timestampHeader) ||
-      !/^[0-9a-f]{64}$/i.test(signature)) {
+  if (
+    !signature ||
+    !timestamp ||
+    !/^[0-9a-f]{64}$/i.test(signature) ||
+    timestamp !== String(timestampHeader)
+  ) {
     console.error("[SHOPPEX] Invalid signature format");
     return false;
   }
 
   const age = Math.abs(
-    Math.floor(Date.now() / 1000) - Number(timestamp)
+    Math.floor(Date.now() / 1000) -
+    Number(timestamp)
   );
 
   if (!Number.isFinite(age) || age > 300) {
-    console.error("[SHOPPEX] Webhook timestamp expired");
+    console.error("[SHOPPEX] Expired timestamp");
     return false;
   }
+
+  // IMPORTANT:
+  // Shoppex signs deliveryId.timestamp.rawBody
+  // There is NO extra period after timestamp.
 
   const expected = crypto
     .createHmac("sha256", SHOPPEX_WEBHOOK_SECRET)
@@ -512,55 +557,33 @@ function verifyShoppexWebhook(req) {
     .update(req.rawBody)
     .digest();
 
+  // The signature base is deliveryId.timestamp + raw body.
+  // Build the documented input without an extra separator.
+
+  const correctExpected = crypto
+    .createHmac("sha256", SHOPPEX_WEBHOOK_SECRET)
+    .update(`${deliveryId}.${timestamp}`, "utf8")
+    .update(req.rawBody)
+    .digest();
+
   const received = Buffer.from(signature, "hex");
 
   const valid =
-    received.length === expected.length &&
-    crypto.timingSafeEqual(received, expected);
+    received.length === correctExpected.length &&
+    crypto.timingSafeEqual(received, correctExpected);
 
-  if (!valid) {
-    console.error("[SHOPPEX] HMAC verification failed");
+  if (valid) {
+    console.log("[SHOPPEX] Signature verified.");
   } else {
-    console.log("[SHOPPEX] Signature verified successfully");
+    console.error("[SHOPPEX] HMAC verification failed.");
   }
 
   return valid;
 }
 
-// --------------------------------------------------
-// NEW SHOPPEX TEST ENDPOINT
-// --------------------------------------------------
-
-app.post("/webhooks/shoppex-test", (req, res) => {
-  console.log("[SHOPPEX TEST] Endpoint reached.");
-
-  if (!verifyShoppexWebhook(req)) {
-    console.warn("[SHOPPEX TEST] Invalid signature.");
-
-    return res.status(401).json({
-      error: "Invalid webhook signature",
-    });
-  }
-
-  const event = String(
-    req.headers["x-shoppex-event"] ||
-    req.body?.event ||
-    ""
-  ).trim().toLowerCase();
-
-  console.log("[SHOPPEX TEST] Signature verified.");
-  console.log("[SHOPPEX TEST] Event:", event || "No event");
-  console.log("[SHOPPEX TEST] Payload keys:", Object.keys(req.body || {}));
-
-  return res.status(200).json({
-    received: true,
-    endpoint: "shoppex-test",
-  });
-});
-
-// --------------------------------------------------
-// WEBHOOK DEDUPLICATION
-// --------------------------------------------------
+// ================================================
+// DELIVERY DEDUPLICATION
+// ================================================
 
 const processedDeliveries = new Set();
 
@@ -573,27 +596,79 @@ function rememberDelivery(id) {
   }
 }
 
-// --------------------------------------------------
+// ================================================
+// UPDATE STOCK CACHE FROM WEBHOOK
+// ================================================
+
+const stockCache = new Map();
+
+function updateCacheFromWebhook(payload) {
+  const data = getData(payload);
+  const product = getProduct(payload);
+
+  const productId = firstDefined(
+    data.product_uniqid,
+    data.product_id,
+    product.uniqid,
+    product.id
+  );
+
+  const variants = Array.isArray(data.variants)
+    ? data.variants
+    : Array.isArray(data.stock?.variants)
+      ? data.stock.variants
+      : [];
+
+  if (productId && variants.length) {
+    for (const variant of variants) {
+      const id = variant.id || variant.uniqid || "default";
+      const stock = Number(
+        firstDefined(
+          variant.available_stock,
+          variant.stock
+        )
+      );
+
+      if (Number.isFinite(stock)) {
+        stockCache.set(`${productId}:${id}`, stock);
+      }
+    }
+  }
+
+  if (productId) {
+    const stock = Number(getStock(payload));
+
+    if (Number.isFinite(stock)) {
+      stockCache.set(String(productId), stock);
+    }
+  }
+}
+
+// ================================================
 // PROCESS SHOPPEX EVENTS
-// --------------------------------------------------
+// ================================================
 
 async function processWebhook(event, payload) {
-  console.log("[SHOPPEX] Event received:", event);
-  console.log("[SHOPPEX] Payload keys:", Object.keys(payload || {}));
+  console.log("[SHOPPEX] Processing event:", event);
 
   const data = getData(payload);
+
+  console.log(
+    "[SHOPPEX] Payload keys:",
+    Object.keys(payload || {})
+  );
 
   console.log(
     "[SHOPPEX] Data keys:",
     Object.keys(data || {})
   );
 
-  // SALE
+  // PAID ORDERS
   if (
     event === "order:paid" ||
     event === "order:paid:product"
   ) {
-    console.log("[SHOPPEX] Processing sale...");
+    console.log("[SHOPPEX] Paid order detected.");
 
     await sendToChannel(SALES_CHANNEL_ID, {
       embeds: [buildSaleEmbed(payload)],
@@ -603,44 +678,52 @@ async function processWebhook(event, payload) {
     return;
   }
 
-  // STOCK / RESTOCK
+  // PRODUCT STOCK
   if (
-    event.includes("stock") ||
-    event.includes("restock")
+    event === "product:stock" ||
+    event.includes("restock") ||
+    event.includes("stock")
   ) {
-    console.log("[SHOPPEX] Processing stock event...");
+    console.log("[SHOPPEX] Stock update detected.");
+    console.log(
+      "[SHOPPEX] Product:",
+      getProductName(payload)
+    );
+    console.log(
+      "[SHOPPEX] Stock:",
+      getStock(payload)
+    );
 
-    console.log("[SHOPPEX] Product:", getProductName(payload));
-    console.log("[SHOPPEX] Stock:", getStock(payload));
+    updateCacheFromWebhook(payload);
 
-    const message = buildRestockMessage(payload);
-
-    await sendToChannel(RESTOCK_CHANNEL_ID, message);
+    await sendToChannel(
+      RESTOCK_CHANNEL_ID,
+      buildRestockMessage(payload)
+    );
 
     console.log("[SHOPPEX] Restock notification sent.");
     return;
   }
 
-  console.log("[SHOPPEX] Event ignored:", event || "EMPTY EVENT");
+  console.log("[SHOPPEX] Event ignored:", event);
 }
 
-// --------------------------------------------------
-// ORIGINAL SHOPPEX WEBHOOK ENDPOINT
-// --------------------------------------------------
+// ================================================
+// MAIN SHOPPEX WEBHOOK
+// ================================================
 
 app.post("/webhooks/shoppex", async (req, res) => {
-  console.log("[SHOPPEX] POST endpoint reached.");
+  console.log("[SHOPPEX] Endpoint reached.");
 
   if (!verifyShoppexWebhook(req)) {
-    console.warn("[SHOPPEX] Invalid signature.");
-
     return res.status(401).json({
+      received: false,
       error: "Invalid webhook signature",
     });
   }
 
   const deliveryId =
-    req.headers["x-shoppex-delivery"];
+    String(req.headers["x-shoppex-delivery"]);
 
   if (processedDeliveries.has(deliveryId)) {
     console.log("[SHOPPEX] Duplicate delivery:", deliveryId);
@@ -656,6 +739,8 @@ app.post("/webhooks/shoppex", async (req, res) => {
   const event = String(
     req.headers["x-shoppex-event"] ||
     payload.event ||
+    payload.type ||
+    payload.event_type ||
     ""
   ).trim().toLowerCase();
 
@@ -668,57 +753,308 @@ app.post("/webhooks/shoppex", async (req, res) => {
 
     return res.status(200).json({
       received: true,
+      event,
     });
   } catch (error) {
     console.error(
-      "[SHOPPEX] Webhook processing error:",
+      "[SHOPPEX] Processing error:",
       error
     );
 
     return res.status(500).json({
+      received: false,
       error: "Webhook processing failed",
     });
   }
 });
 
-// --------------------------------------------------
-// JSON PARSER ERROR HANDLER
-// --------------------------------------------------
+// ================================================
+// API REQUEST
+// ================================================
 
-app.use((error, req, res, next) => {
-  if (req.path.startsWith("/webhooks/shoppex")) {
-    console.error("[SHOPPEX] JSON parsing error:", error.message);
+function shoppexGet(path) {
+  return new Promise((resolve, reject) => {
+    if (!SHOPPEX_API_KEY) {
+      return reject(new Error("SHOPPEX_API_KEY missing"));
+    }
 
-    return res.status(400).json({
-      error: "Invalid JSON body",
+    const request = https.request(
+      {
+        hostname: "api.shoppex.io",
+        path,
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${SHOPPEX_API_KEY}`,
+          Accept: "application/json",
+        },
+        timeout: 15000,
+      },
+      response => {
+        let body = "";
+
+        response.setEncoding("utf8");
+
+        response.on("data", chunk => {
+          body += chunk;
+        });
+
+        response.on("end", () => {
+          if (
+            response.statusCode < 200 ||
+            response.statusCode >= 300
+          ) {
+            return reject(
+              new Error(
+                `Shoppex API HTTP ${response.statusCode}: ${body.slice(0, 300)}`
+              )
+            );
+          }
+
+          try {
+            resolve(JSON.parse(body));
+          } catch {
+            reject(
+              new Error("Shoppex API returned invalid JSON")
+            );
+          }
+        });
+      }
+    );
+
+    request.on("timeout", () => {
+      request.destroy(new Error("Shoppex API timeout"));
     });
+
+    request.on("error", reject);
+
+    request.end();
+  });
+}
+
+// ================================================
+// FETCH ALL PRODUCTS
+// ================================================
+
+async function fetchAllProducts() {
+  const products = [];
+  let cursor = null;
+
+  for (let page = 0; page < 20; page++) {
+    const query = new URLSearchParams({
+      limit: "100",
+    });
+
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+
+    const result = await shoppexGet(
+      `/dev/v1/products?${query.toString()}`
+    );
+
+    const data = result?.data;
+
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.products)
+        ? data.products
+        : [];
+
+    products.push(...list);
+
+    const pagination = result?.pagination ||
+      data?.pagination ||
+      {};
+
+    if (
+      !pagination.has_more ||
+      !pagination.next_cursor
+    ) {
+      break;
+    }
+
+    cursor = pagination.next_cursor;
   }
 
-  console.error("[SERVER] Request error:", error.message);
+  return products;
+}
 
-  return res.status(400).json({
-    error: "Bad request",
-  });
-});
+// ================================================
+// STOCK POLLING
+// ================================================
 
-// --------------------------------------------------
+let pollRunning = false;
+let firstPollDone = false;
+
+async function checkStock() {
+  if (pollRunning || !SHOPPEX_API_KEY) return;
+
+  pollRunning = true;
+
+  try {
+    const products = await fetchAllProducts();
+
+    console.log(
+      `[STOCK] Checking ${products.length} products.`
+    );
+
+    for (const product of products) {
+      const productId = product.uniqid || product.id;
+
+      if (!productId) continue;
+
+      let info;
+
+      try {
+        const result = await shoppexGet(
+          `/dev/v1/products/${encodeURIComponent(productId)}/stock`
+        );
+
+        info = result?.data || result;
+      } catch (error) {
+        console.error(
+          "[STOCK] Could not read product:",
+          productId,
+          error.message
+        );
+        continue;
+      }
+
+      const variants = Array.isArray(info?.variants)
+        ? info.variants
+        : [];
+
+      const entries = variants.length
+        ? variants.map(variant => ({
+            key: `${productId}:${variant.id || variant.uniqid}`,
+            stock: firstDefined(
+              variant.available_stock,
+              variant.stock
+            ),
+            unlimited: variant.unlimited,
+            variantTitle: variant.title,
+          }))
+        : [{
+            key: String(productId),
+            stock: firstDefined(
+              info?.available_stock,
+              info?.stock
+            ),
+            unlimited: info?.unlimited,
+            variantTitle: null,
+          }];
+
+      for (const entry of entries) {
+        if (entry.unlimited) continue;
+
+        const current = Number(entry.stock);
+
+        if (!Number.isFinite(current)) continue;
+
+        const previous = stockCache.get(entry.key);
+
+        stockCache.set(entry.key, current);
+
+        if (
+          firstPollDone &&
+          previous !== undefined &&
+          current > previous
+        ) {
+          const name =
+            product.title ||
+            product.name ||
+            "Digital product";
+
+          console.log(
+            `[STOCK] ${name}: ${previous} -> ${current}`
+          );
+
+          const payload = {
+            data: {
+              product_title: name,
+              variant_title: entry.variantTitle,
+              stock: current,
+              price: product.price,
+              currency: product.currency,
+              product,
+            },
+          };
+
+          try {
+            await sendToChannel(
+              RESTOCK_CHANNEL_ID,
+              buildRestockMessage(payload)
+            );
+
+            console.log(
+              "[STOCK] Restock notification sent."
+            );
+          } catch (error) {
+            console.error(
+              "[STOCK] Discord delivery error:",
+              error.message
+            );
+          }
+        }
+      }
+    }
+
+    if (!firstPollDone) {
+      console.log(
+        `[STOCK] Baseline saved for ${stockCache.size} items.`
+      );
+    }
+
+    firstPollDone = true;
+
+  } catch (error) {
+    console.error(
+      "[STOCK] Polling error:",
+      error.message
+    );
+  } finally {
+    pollRunning = false;
+  }
+}
+
+function startStockPolling() {
+  if (!SHOPPEX_API_KEY) {
+    console.error(
+      "[STOCK] API key missing. Polling disabled."
+    );
+    return;
+  }
+
+  console.log(
+    `[STOCK] Polling every ${POLL_SECONDS} seconds.`
+  );
+
+  checkStock();
+
+  setInterval(
+    checkStock,
+    POLL_SECONDS * 1000
+  );
+}
+
+// ================================================
 // SLASH COMMANDS
-// --------------------------------------------------
+// ================================================
 
 const commands = [
   new SlashCommandBuilder()
     .setName("say")
-    .setDescription("Send a message to a selected channel")
+    .setDescription("Send a message to a channel")
     .addChannelOption(option =>
       option
         .setName("canal")
-        .setDescription("Channel where the message will be sent")
+        .setDescription("Destination channel")
         .setRequired(true)
     )
     .addStringOption(option =>
       option
         .setName("mensaje")
-        .setDescription("Message to send")
+        .setDescription("Message")
         .setRequired(true)
         .setMaxLength(2000)
     ),
@@ -737,13 +1073,13 @@ const commands = [
 
 ].map(command => command.toJSON());
 
-// --------------------------------------------------
+// ================================================
 // REGISTER COMMANDS
-// --------------------------------------------------
+// ================================================
 
 async function registerCommands() {
-  if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID) {
-    throw new Error("Missing Discord configuration variables");
+  if (!CLIENT_ID || !GUILD_ID || !DISCORD_TOKEN) {
+    throw new Error("Discord configuration missing");
   }
 
   const rest = new REST({
@@ -751,222 +1087,21 @@ async function registerCommands() {
   }).setToken(DISCORD_TOKEN);
 
   await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+    Routes.applicationGuildCommands(
+      CLIENT_ID,
+      GUILD_ID
+    ),
     {
       body: commands,
     }
   );
 
-  console.log("Discord slash commands registered.");
+  console.log("[DISCORD] Slash commands registered.");
 }
 
-// --------------------------------------------------
-// STOCK POLLING (Shoppex API)
-// Shoppex does not send a webhook when keys are uploaded,
-// so the bot checks the stock by itself every few seconds.
-// --------------------------------------------------
-
-const POLL_SECONDS = Number(process.env.SHOPPEX_POLL_SECONDS || 60);
-const stockCache = new Map();
-let pollRunning = false;
-let firstPollDone = false;
-
-function shoppexGet(path) {
-  return new Promise((resolve, reject) => {
-    const request = https.request(
-      {
-        hostname: "api.shoppex.io",
-        path,
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${SHOPPEX_API_KEY}`,
-          Accept: "application/json",
-        },
-        timeout: 15000,
-      },
-      response => {
-        let body = "";
-
-        response.setEncoding("utf8");
-        response.on("data", chunk => body += chunk);
-
-        response.on("end", () => {
-          if (
-            response.statusCode < 200 ||
-            response.statusCode >= 300
-          ) {
-            return reject(new Error(
-              `Shoppex API HTTP ${response.statusCode} on ${path.split("?")[0]}`
-            ));
-          }
-
-          try {
-            resolve(JSON.parse(body));
-          } catch {
-            reject(new Error("Shoppex API returned invalid JSON"));
-          }
-        });
-      }
-    );
-
-    request.on("timeout", () =>
-      request.destroy(new Error("Shoppex API timeout"))
-    );
-
-    request.on("error", reject);
-    request.end();
-  });
-}
-
-async function fetchAllProducts() {
-  const products = [];
-  let cursor = null;
-
-  for (let page = 0; page < 20; page++) {
-    const query = new URLSearchParams({ limit: "100" });
-    if (cursor) query.set("cursor", cursor);
-
-    const result = await shoppexGet(`/dev/v1/products?${query}`);
-    const list = Array.isArray(result?.data) ? result.data : [];
-
-    products.push(...list);
-
-    if (
-      !result?.pagination?.has_more ||
-      !result?.pagination?.next_cursor
-    ) {
-      break;
-    }
-
-    cursor = result.pagination.next_cursor;
-  }
-
-  return products;
-}
-
-async function checkStock() {
-  if (pollRunning) return;
-  pollRunning = true;
-
-  try {
-    const products = await fetchAllProducts();
-
-    for (const product of products) {
-      const productId = product.uniqid || product.id;
-      if (!productId) continue;
-
-      let info;
-
-      try {
-        const result = await shoppexGet(
-          `/dev/v1/products/${encodeURIComponent(productId)}/stock`
-        );
-
-        info = result?.data || result;
-      } catch (error) {
-        console.error(
-          "[STOCK] Could not read stock:",
-          productId,
-          error.message
-        );
-        continue;
-      }
-
-      const variants = Array.isArray(info?.variants)
-        ? info.variants
-        : [];
-
-      const entries = variants.length
-        ? variants.map(v => ({
-            key: `${productId}:${v.id || v.uniqid}`,
-            stock: v.available_stock ?? v.stock,
-            unlimited: v.unlimited,
-            variantTitle: v.title,
-          }))
-        : [{
-            key: productId,
-            stock: info?.available_stock ?? info?.stock,
-            unlimited: info?.unlimited,
-            variantTitle: null,
-          }];
-
-      for (const entry of entries) {
-        if (entry.unlimited) continue;
-
-        const current = Number(entry.stock);
-        if (!Number.isFinite(current)) continue;
-
-        const previous = stockCache.get(entry.key);
-        stockCache.set(entry.key, current);
-
-        if (
-          firstPollDone &&
-          previous !== undefined &&
-          current > previous
-        ) {
-          const name =
-            product.title ||
-            product.name ||
-            "Digital product";
-
-          console.log(
-            `[STOCK] ${name} ${entry.variantTitle || ""}: ${previous} -> ${current}`
-          );
-
-          await sendToChannel(
-            RESTOCK_CHANNEL_ID,
-            buildRestockMessage({
-              event: "product:stock",
-              data: {
-                product_title: name,
-                variant_title: entry.variantTitle,
-                stock: current,
-                price: product.price,
-                currency: product.currency,
-                product,
-              },
-            })
-          );
-
-          console.log("[STOCK] Restock notification sent.");
-        }
-      }
-    }
-
-    if (!firstPollDone) {
-      console.log(
-        `[STOCK] Baseline saved for ${stockCache.size} items.`
-      );
-    }
-
-    firstPollDone = true;
-  } catch (error) {
-    console.error("[STOCK] Polling error:", error.message);
-  } finally {
-    pollRunning = false;
-  }
-}
-
-function startStockPolling() {
-  if (!SHOPPEX_API_KEY) {
-    console.error("[STOCK] SHOPPEX_API_KEY is missing, polling disabled.");
-    return;
-  }
-
-  console.log(`[STOCK] Polling every ${POLL_SECONDS} seconds.`);
-
-  checkStock();
-  setInterval(checkStock, POLL_SECONDS * 1000);
-}
-
-// --------------------------------------------------
-// DISCORD EVENTS
-// --------------------------------------------------
-
-client.once("clientReady", () => {
-  console.log(`SIMBA SHOP online as ${client.user.tag}`);
-  startStockPolling();
-});
+// ================================================
+// DISCORD INTERACTIONS
+// ================================================
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -990,9 +1125,11 @@ client.on("interactionCreate", async interaction => {
       const message =
         interaction.options.getString("mensaje", true);
 
-      if (!channel ||
-          !channel.isTextBased() ||
-          !channel.send) {
+      if (
+        !channel ||
+        !channel.isTextBased() ||
+        !channel.send
+      ) {
         return interaction.reply({
           content: "Please select a text channel.",
           ephemeral: true,
@@ -1021,7 +1158,7 @@ client.on("interactionCreate", async interaction => {
           gateway: "LITECOIN",
           total: 1.50,
           currency: "EUR",
-          customer_email: "test.user@proton.me",
+          customer_email: "test@example.com",
           quantity: 1,
           product_title: "SIMBA SHOP Test Product",
           line_items: [
@@ -1049,9 +1186,7 @@ client.on("interactionCreate", async interaction => {
       });
 
       const payload = {
-        event: "product:stock",
         data: {
-          uniqid: "SIMBA-TEST-PRODUCT",
           product_title: "SIMBA SHOP Test Product",
           stock: 24,
           price: 1.00,
@@ -1081,9 +1216,16 @@ client.on("interactionCreate", async interaction => {
         );
       }
 
-      await shoppexGet("/dev/v1/me");
+      const result = await shoppexGet("/dev/v1/me");
 
-      console.log("[SHOPPEX] API connection successful.");
+      console.log(
+        "[SHOPPEX] API connection successful."
+      );
+
+      console.log(
+        "[SHOPPEX] Account response keys:",
+        Object.keys(result?.data || result || {})
+      );
 
       return interaction.editReply(
         "Shoppex API connection successful!"
@@ -1091,9 +1233,13 @@ client.on("interactionCreate", async interaction => {
     }
 
   } catch (error) {
-    console.error("[DISCORD] Command error:", error);
+    console.error(
+      "[DISCORD] Command error:",
+      error
+    );
 
-    const message = "An error occurred. Check Railway logs.";
+    const message =
+      "An error occurred. Check Railway logs.";
 
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
@@ -1106,17 +1252,29 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// --------------------------------------------------
-// HEALTH CHECK
-// --------------------------------------------------
+// ================================================
+// BOT READY
+// ================================================
 
-app.get("/", (_req, res) => {
+client.once("ready", () => {
+  console.log(
+    `[DISCORD] SIMBA SHOP online as ${client.user.tag}`
+  );
+
+  startStockPolling();
+});
+
+// ================================================
+// HEALTH CHECK
+// ================================================
+
+app.get("/", (req, res) => {
   res.status(200).send(
     "SIMBA SHOP Discord Bot - Shoppex is running."
   );
 });
 
-app.get("/health", (_req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     bot: client.isReady(),
@@ -1125,30 +1283,37 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// --------------------------------------------------
-// START SERVER
-// --------------------------------------------------
+// ================================================
+// SERVER START
+// ================================================
 
 app.listen(PORT, () => {
-  console.log(`HTTP server listening on port ${PORT}`);
+  console.log(
+    `[SERVER] HTTP server listening on port ${PORT}`
+  );
 });
 
-// --------------------------------------------------
+// ================================================
 // START BOT
-// --------------------------------------------------
+// ================================================
 
 async function startBot() {
   try {
+    if (!DISCORD_TOKEN) {
+      throw new Error("DISCORD_TOKEN is missing");
+    }
+
     await registerCommands();
     await client.login(DISCORD_TOKEN);
+
   } catch (error) {
-    console.error("Bot startup error:", error);
-    process.exitCode = 1;
+    console.error(
+      "[STARTUP] Bot startup error:",
+      error
+    );
+
+    process.exit(1);
   }
 }
 
-if (!DISCORD_TOKEN) {
-  console.error("Missing DISCORD_TOKEN in Railway.");
-} else {
-  startBot();
-}
+startBot();
